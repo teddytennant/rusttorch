@@ -23,7 +23,7 @@ pub struct Tensor {
 
 /// Internal tensor data representation
 #[derive(Debug)]
-enum TensorData {
+pub(crate) enum TensorData {
     Float32(Array<f32, IxDyn>),
     Float64(Array<f64, IxDyn>),
     Int32(Array<i32, IxDyn>),
@@ -92,6 +92,31 @@ impl Tensor {
     /// Get the data type
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+
+    /// Get a reference to the internal data (for operations)
+    pub(crate) fn data(&self) -> &TensorData {
+        &self.data
+    }
+
+    /// Create a tensor from TensorData (for operations)
+    pub(crate) fn from_data(data: TensorData, dtype: DType) -> Self {
+        Tensor {
+            data: Arc::new(data),
+            dtype,
+        }
+    }
+}
+
+impl TensorData {
+    /// Get the shape of the underlying array
+    pub fn shape(&self) -> &[usize] {
+        match self {
+            TensorData::Float32(arr) => arr.shape(),
+            TensorData::Float64(arr) => arr.shape(),
+            TensorData::Int32(arr) => arr.shape(),
+            TensorData::Int64(arr) => arr.shape(),
+        }
     }
 }
 
