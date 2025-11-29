@@ -78,17 +78,89 @@ fn relu(tensor: &PyTensor) -> PyTensor {
     }
 }
 
+/// Matrix multiplication
+#[pyfunction]
+fn matmul(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    match rusttorch_core::ops::matmul(&a.inner, &b.inner) {
+        Ok(result) => Ok(PyTensor { inner: result }),
+        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
+    }
+}
+
+/// Transpose a tensor
+#[pyfunction]
+fn transpose(tensor: &PyTensor) -> PyTensor {
+    PyTensor {
+        inner: rusttorch_core::ops::transpose(&tensor.inner),
+    }
+}
+
+/// Reshape a tensor
+#[pyfunction]
+fn reshape(tensor: &PyTensor, shape: &PyList) -> PyResult<PyTensor> {
+    let shape_vec: Vec<usize> = shape.extract()?;
+    match rusttorch_core::ops::reshape(&tensor.inner, &shape_vec) {
+        Ok(result) => Ok(PyTensor { inner: result }),
+        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
+    }
+}
+
+/// Sum reduction
+#[pyfunction]
+fn sum(tensor: &PyTensor) -> f64 {
+    rusttorch_core::ops::sum(&tensor.inner)
+}
+
+/// Mean reduction
+#[pyfunction]
+fn mean(tensor: &PyTensor) -> f64 {
+    rusttorch_core::ops::mean(&tensor.inner)
+}
+
+/// Sigmoid activation
+#[pyfunction]
+fn sigmoid(tensor: &PyTensor) -> PyResult<PyTensor> {
+    match rusttorch_core::ops::sigmoid(&tensor.inner) {
+        Ok(result) => Ok(PyTensor { inner: result }),
+        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
+    }
+}
+
+/// Tanh activation
+#[pyfunction]
+fn tanh(tensor: &PyTensor) -> PyResult<PyTensor> {
+    match rusttorch_core::ops::tanh(&tensor.inner) {
+        Ok(result) => Ok(PyTensor { inner: result }),
+        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
+    }
+}
+
 /// Python module definition
 #[pymodule]
 fn rusttorch(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
+
+    // Element-wise operations
     m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(mul, m)?)?;
+
+    // Matrix operations
+    m.add_function(wrap_pyfunction!(matmul, m)?)?;
+    m.add_function(wrap_pyfunction!(transpose, m)?)?;
+    m.add_function(wrap_pyfunction!(reshape, m)?)?;
+
+    // Reduction operations
+    m.add_function(wrap_pyfunction!(sum, m)?)?;
+    m.add_function(wrap_pyfunction!(mean, m)?)?;
+
+    // Activation functions
     m.add_function(wrap_pyfunction!(relu, m)?)?;
+    m.add_function(wrap_pyfunction!(sigmoid, m)?)?;
+    m.add_function(wrap_pyfunction!(tanh, m)?)?;
 
     // Module metadata
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add("__author__", "RustTorch Contributors")?;
+    m.add("__author__", "Theodore Tennant (@teddytennant)")?;
 
     Ok(())
 }
