@@ -400,3 +400,12 @@ CLAUDE.local.md
 /debug_*.py
 CLAUDE_CONTEXT/
 /.claude/settings.local.json
+
+# RustTorch specific
+/rusttorch-core/target/
+/rusttorch-py/target/
+rusttorch-core/Cargo.lock
+rusttorch-py/Cargo.lock
+*.so
+*.dylib
+rusttorch-py/python/rusttorch/*.so

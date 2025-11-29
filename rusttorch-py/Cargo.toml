@@ -1,0 +1,20 @@
+[package]
+name = "rusttorch"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "rusttorch"
+crate-type = ["cdylib"]
+
+[dependencies]
+rusttorch-core = { path = "../rusttorch-core" }
+pyo3.workspace = true
+numpy.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.20"
