@@ -142,28 +142,67 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 python3 --version
 ```
 
-### Building (Coming Soon)
+### Building
+
+**Prerequisites:**
+- Rust toolchain 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- Python 3.10+
+- Maturin (`pip install maturin`)
+
+**Build Steps:**
 ```bash
-# Build Rust core
+# Build Rust core and run tests
 cd rusttorch-core
 cargo build --release
+cargo test
 
 # Build Python bindings
 cd ../rusttorch-py
 maturin develop --release
+
+# Verify installation
+python -c "import rusttorch; print(rusttorch.__version__)"
 ```
 
-### Usage Example (Planned)
+**Run Benchmarks:**
+```bash
+# Rust benchmarks (requires nightly Rust)
+cd rusttorch-core
+cargo bench
+
+# Python vs PyTorch comparison
+python benchmarks/compare_pytorch.py
+```
+
+### Usage Example
+
+**Direct Usage:**
+```python
+import rusttorch
+
+# Create tensors directly
+x = rusttorch.Tensor.zeros([1000, 1000])
+y = rusttorch.Tensor.ones([1000, 1000])
+
+# Perform operations
+result = rusttorch.add(x, y)
+activated = rusttorch.relu(result)
+```
+
+**Integration with PyTorch:**
 ```python
 import torch
 import rusttorch
 
-# Drop-in replacement for specific operations
-x = torch.randn(1000, 1000)
-y = torch.randn(1000, 1000)
+# Convert PyTorch tensors to RustTorch
+x_torch = torch.randn(1000, 1000)
+y_torch = torch.randn(1000, 1000)
+
+x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+y_rust = rusttorch.Tensor.from_numpy(y_torch.numpy())
 
 # Use Rust-accelerated operations
-result = rusttorch.add(x, y)  # Faster than torch.add on CPU
+result = rusttorch.add(x_rust, y_rust)  # Potentially faster on CPU
 ```
 
 ## Contributing
@@ -180,9 +219,9 @@ This project follows PyTorch's BSD-style license. See original [PyTorch LICENSE]
 
 ## Status
 
-**Current Status**: ✅ ALL CORE FEATURES COMPLETE - Ready for Alpha Release
+**Current Status**: ✅ CORE FEATURES COMPLETE - Alpha Testing Phase
 
-RustTorch is now a **production-ready, high-performance neural network toolkit** with:
+RustTorch is a **high-performance neural network toolkit** with:
 
 ### Tensor Operations (19 functions)
 - Tensor creation and management (zeros, ones, from_vec)
