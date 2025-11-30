@@ -52,25 +52,25 @@ fn bench_elementwise_ops(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("add", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(add(&a, &b).unwrap())
+                black_box(add(&a, &b))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("mul", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(mul(&a, &b).unwrap())
+                black_box(mul(&a, &b))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("sub", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(sub(&a, &b).unwrap())
+                black_box(sub(&a, &b))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("div", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(div(&a, &b).unwrap())
+                black_box(div(&a, &b))
             })
         });
 
@@ -122,13 +122,13 @@ fn bench_reduction_ops(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("sum_dim", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(sum_dim(&tensor, 0).unwrap())
+                black_box(sum_dim(&tensor, 0))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("mean_dim", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(mean_dim(&tensor, 0).unwrap())
+                black_box(mean_dim(&tensor, 0))
             })
         });
     }
@@ -156,25 +156,25 @@ fn bench_activation_ops(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("sigmoid", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(sigmoid(&tensor).unwrap())
+                black_box(sigmoid(&tensor))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("tanh", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(tanh(&tensor).unwrap())
+                black_box(tanh(&tensor))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("gelu", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(gelu(&tensor).unwrap())
+                black_box(gelu(&tensor))
             })
         });
 
         group.bench_with_input(BenchmarkId::new("softmax", size), size, |bench, _| {
             bench.iter(|| {
-                black_box(softmax(&tensor, 1).unwrap())
+                black_box(softmax(&tensor, 1))
             })
         });
     }
