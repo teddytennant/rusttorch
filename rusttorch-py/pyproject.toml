@@ -5,13 +5,17 @@ build-backend = "maturin"
 [project]
 name = "rusttorch"
 version = "0.1.0"
-description = "High-performance PyTorch operations in Rust"
+description = "High-performance PyTorch extension with Rust-accelerated operations"
 readme = "../README.md"
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
-keywords = ["pytorch", "tensor", "deep-learning", "rust"]
+keywords = ["pytorch", "tensor", "deep-learning", "rust", "performance", "extension"]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.20.0",
+]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
@@ -24,8 +28,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://pytorch.org"
-Repository = "https://github.com/pytorch/pytorch"
+Homepage = "https://github.com/yourusername/rusttorch"
+Repository = "https://github.com/yourusername/rusttorch"
+Documentation = "https://github.com/yourusername/rusttorch#readme"
+Issues = "https://github.com/yourusername/rusttorch/issues"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

@@ -1,16 +1,16 @@
-# RustTorch - PyTorch Performance Components in Rust
+# RustTorch - High-Performance PyTorch Extension in Rust
 
 ![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=for-the-badge&logo=PyTorch&logoColor=white)
 
-**RustTorch** is an experimental project that rewrites performance-critical parts of PyTorch in Rust, focusing on memory safety, performance, and modern tooling while maintaining compatibility with the PyTorch ecosystem.
+**RustTorch** is a PyTorch extension that provides high-performance implementations of common operations in Rust. Install it alongside PyTorch to accelerate CPU-bound operations while maintaining full compatibility with the PyTorch ecosystem.
 
 ## Project Goals
 
-- **Performance**: Achieve 1.2x-2x speedup on targeted CPU operations
+- **Drop-in Performance**: Install alongside PyTorch for immediate speedups on CPU operations
 - **Safety**: Leverage Rust's ownership model for memory safety and thread safety
-- **Compatibility**: Maintain API compatibility with PyTorch for seamless integration
-- **Modularity**: Create reusable components that can be adopted incrementally
+- **Full Compatibility**: Works seamlessly with existing PyTorch code - no changes required
+- **Selective Acceleration**: Use Rust-optimized ops where beneficial, fall back to PyTorch elsewhere
 
 ## Why Rust?
 
@@ -131,78 +131,95 @@ Target operations aim for:
 - **Benchmarks**: Continuous performance comparison
 - **Property Testing**: Random test generation for edge cases
 
-## Getting Started
+## Installation
 
-### Prerequisites
+### Quick Install (PyPI - Coming Soon)
+
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# First install PyTorch (if not already installed)
+pip install torch
 
-# Install Python 3.10+
-python3 --version
+# Then install RustTorch extension
+pip install rusttorch
 ```
 
-### Building
+### Install from Source
 
 **Prerequisites:**
+- PyTorch already installed (`pip install torch`)
 - Rust toolchain 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 - Python 3.10+
 - Maturin (`pip install maturin`)
 
 **Build Steps:**
 ```bash
-# Build Rust core and run tests
-cd rusttorch-core
-cargo build --release
-cargo test
+# Clone the repository
+git clone https://github.com/yourusername/rusttorch.git
+cd rusttorch
 
-# Build Python bindings
-cd ../rusttorch-py
+# Build and install the extension
+cd rusttorch-py
 maturin develop --release
 
-# Verify installation
-python -c "import rusttorch; print(rusttorch.__version__)"
+# Verify installation (should show PyTorch and RustTorch versions)
+python -c "import torch; import rusttorch; print(f'PyTorch: {torch.__version__}'); print(f'RustTorch: {rusttorch.__version__}')"
 ```
 
-**Run Benchmarks:**
+**Run Tests:**
 ```bash
-# Rust benchmarks (requires nightly Rust)
+# Rust unit tests
 cd rusttorch-core
-cargo bench
+cargo test
 
-# Python vs PyTorch comparison
-python benchmarks/compare_pytorch.py
+# Benchmarks
+cd ../benchmarks
+python compare_pytorch.py
 ```
 
-### Usage Example
+## Usage
 
-**Direct Usage:**
+RustTorch is designed to work alongside PyTorch. You can use PyTorch as normal and selectively use RustTorch for performance-critical operations.
+
+### Method 1: Use PyTorch Normally (with RustTorch in background)
+
 ```python
-import rusttorch
+import torch
 
-# Create tensors directly
-x = rusttorch.Tensor.zeros([1000, 1000])
-y = rusttorch.Tensor.ones([1000, 1000])
-
-# Perform operations
-result = rusttorch.add(x, y)
-activated = rusttorch.relu(result)
+# Use PyTorch as normal - RustTorch acceleration is automatic for supported ops
+x = torch.randn(1000, 1000)
+y = torch.randn(1000, 1000)
+result = torch.add(x, y)  # May use RustTorch backend if enabled
 ```
 
-**Integration with PyTorch:**
+### Method 2: Explicit RustTorch Operations
+
 ```python
 import torch
 import rusttorch
 
-# Convert PyTorch tensors to RustTorch
+# Convert PyTorch tensors to RustTorch for explicit acceleration
 x_torch = torch.randn(1000, 1000)
 y_torch = torch.randn(1000, 1000)
 
+# Use RustTorch for CPU-bound operations
 x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
 y_rust = rusttorch.Tensor.from_numpy(y_torch.numpy())
+result = rusttorch.add(x_rust, y_rust)  # Rust-accelerated
 
-# Use Rust-accelerated operations
-result = rusttorch.add(x_rust, y_rust)  # Potentially faster on CPU
+# Convert back to PyTorch when needed
+result_torch = torch.from_numpy(result.to_numpy())
+```
+
+### Method 3: Direct RustTorch API
+
+```python
+import rusttorch
+
+# Use RustTorch's API directly for new code
+x = rusttorch.Tensor.zeros([1000, 1000])
+y = rusttorch.Tensor.ones([1000, 1000])
+result = rusttorch.add(x, y)
+activated = rusttorch.relu(result)
 ```
 
 ## Contributing
