@@ -1,34 +1,29 @@
-# PyTorch Benchmarks
+# RustTorch Benchmarks
 
-This folder contains scripts that produce reproducible timings of various PyTorch features.
+Performance comparison benchmarks for RustTorch vs PyTorch.
 
-It also provides mechanisms to compare PyTorch with other frameworks.
+## Running Benchmarks
 
-## Setup environment
-Make sure you're on a machine with CUDA, torchvision, and pytorch installed. Install in the following order:
-```
-# Install torchvision. It comes with the pytorch stable release binary
-python -m pip install torch torchvision
+Compare RustTorch performance against PyTorch:
 
-# Install the latest pytorch master from source.
-# It should supersede the installation from the release binary.
-cd $PYTORCH_HOME
-python -m pip install --no-build-isolation -v -e .
-
-# Check the pytorch installation version
-python -c "import torch; print(torch.__version__)"
+```bash
+python compare_pytorch.py
 ```
 
-## Benchmark List
+This will benchmark:
+- Element-wise operations (add, mul, sub, div)
+- Activation functions (relu, sigmoid, tanh, gelu)
+- Matrix operations (matmul, transpose)
+- Reduction operations (sum, mean, max, min)
 
-Please refer to each subfolder to discover each benchmark suite. Links are provided where descriptions exist:
+## Results
 
-* [Fast RNNs](fastrnns/README.md)
-* [Dynamo](dynamo/README.md)
-* [Functional autograd](functional_autograd_benchmark/README.md)
-* [Instruction counts](instruction_counts/README.md)
-* [Operator](operator_benchmark/README.md)
-* [Overrides](overrides_benchmark/README.md)
-* [Sparse](sparse/README.md)
-* [Tensor expression](tensorexpr/HowToRun.md)
-* [Data](data/README.md)
+The benchmark will show:
+- Execution time for each operation
+- Speedup factor (RustTorch vs PyTorch)
+- Memory usage comparison
+
+## Requirements
+
+- PyTorch installed (`pip install torch`)
+- RustTorch installed (`cd rusttorch-py && maturin develop --release`)
