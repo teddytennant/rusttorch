@@ -5,6 +5,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use numpy::{PyArray1, PyReadonlyArray2, PyReadonlyArrayDyn};
 use rusttorch_core::{Tensor as RustTensor, DType};
 
 /// Python wrapper for Rust Tensor
@@ -30,6 +31,18 @@ impl PyTensor {
         let shape_vec: Vec<usize> = shape.extract()?;
         Ok(PyTensor {
             inner: RustTensor::ones(&shape_vec, DType::Float32),
+        })
+    }
+
+    /// Create tensor from NumPy array (2D float32)
+    #[staticmethod]
+    fn from_numpy(py: Python, array: PyReadonlyArrayDyn<f32>) -> PyResult<Self> {
+        let shape: Vec<usize> = array.shape().to_vec();
+        let data: Vec<f32> = array.as_slice()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Array must be contiguous"))?
+            .to_vec();
+        Ok(PyTensor {
+            inner: RustTensor::from_vec(data, &shape),
         })
     }
 

@@ -88,12 +88,14 @@ def benchmark_elementwise_ops():
             print(f"  {op_name:<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
             if RUSTTORCH_AVAILABLE:
-                # Convert to RustTorch tensors (placeholder for when implemented)
-                # a_rust = rusttorch.Tensor.from_numpy(a_torch.numpy())
-                # b_rust = rusttorch.Tensor.from_numpy(b_torch.numpy())
-                # rusttorch_time = benchmark_function(getattr(rusttorch, op_name), a_rust, b_rust, iterations=iterations)
-                # print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
-                print("    RustTorch: Not yet implemented")
+                # Convert to RustTorch tensors
+                a_rust = rusttorch.Tensor.from_numpy(a_torch.numpy())
+                b_rust = rusttorch.Tensor.from_numpy(b_torch.numpy())
+
+                # Benchmark RustTorch operation
+                rust_op = getattr(rusttorch, op_name)
+                rusttorch_time = benchmark_function(rust_op, a_rust, b_rust, iterations=iterations)
+                print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
             else:
                 print()
 
@@ -109,7 +111,10 @@ def benchmark_elementwise_ops():
             print(f"  {op_name:<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
             if RUSTTORCH_AVAILABLE:
-                print("    RustTorch: Not yet implemented")
+                a_rust = rusttorch.Tensor.from_numpy(a_torch.numpy())
+                rust_op = getattr(rusttorch, op_name)
+                rusttorch_time = benchmark_function(rust_op, a_rust, scalar, iterations=iterations)
+                print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
             else:
                 print()
 
@@ -141,7 +146,10 @@ def benchmark_activations():
             print(f"  {act_name:<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
             if RUSTTORCH_AVAILABLE:
-                print("    RustTorch: Not yet implemented")
+                x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+                rust_act = getattr(rusttorch, act_name)
+                rusttorch_time = benchmark_function(rust_act, x_rust, iterations=iterations)
+                print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
             else:
                 print()
 
@@ -150,7 +158,9 @@ def benchmark_activations():
         print(f"  {'softmax':<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
         if RUSTTORCH_AVAILABLE:
-            print("    RustTorch: Not yet implemented")
+            x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+            rusttorch_time = benchmark_function(rusttorch.softmax, x_rust, 1, iterations=iterations)
+            print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
         else:
             print()
 
@@ -170,12 +180,10 @@ def benchmark_reductions():
 
         x_torch = torch.randn(size, size)
 
-        # Global reductions
+        # Global reductions - note: these return scalars, not tensors
         reductions = [
             ("sum", torch.sum),
             ("mean", torch.mean),
-            ("max", torch.max),
-            ("min", torch.min),
         ]
 
         for red_name, red_func in reductions:
@@ -183,22 +191,10 @@ def benchmark_reductions():
             print(f"  {red_name:<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
             if RUSTTORCH_AVAILABLE:
-                print("    RustTorch: Not yet implemented")
-            else:
-                print()
-
-        # Dimension-specific reductions
-        dim_reductions = [
-            ("sum_dim", lambda t: torch.sum(t, dim=0)),
-            ("mean_dim", lambda t: torch.mean(t, dim=0)),
-        ]
-
-        for red_name, red_func in dim_reductions:
-            pytorch_time = benchmark_function(red_func, x_torch, iterations=iterations)
-            print(f"  {red_name:<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
-
-            if RUSTTORCH_AVAILABLE:
-                print("    RustTorch: Not yet implemented")
+                x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+                rust_red = getattr(rusttorch, red_name)
+                rusttorch_time = benchmark_function(rust_red, x_rust, iterations=iterations)
+                print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
             else:
                 print()
 
@@ -225,7 +221,10 @@ def benchmark_matrix_ops():
         print(f"  {'matmul':<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
         if RUSTTORCH_AVAILABLE:
-            print("    RustTorch: Not yet implemented")
+            a_rust = rusttorch.Tensor.from_numpy(a_torch.numpy())
+            b_rust = rusttorch.Tensor.from_numpy(b_torch.numpy())
+            rusttorch_time = benchmark_function(rusttorch.matmul, a_rust, b_rust, iterations=iterations)
+            print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
         else:
             print()
 
@@ -242,7 +241,9 @@ def benchmark_matrix_ops():
         print(f"  {'transpose':<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
         if RUSTTORCH_AVAILABLE:
-            print("    RustTorch: Not yet implemented")
+            x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+            rusttorch_time = benchmark_function(rusttorch.transpose, x_rust, iterations=100)
+            print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
         else:
             print()
 
@@ -259,7 +260,9 @@ def benchmark_matrix_ops():
         print(f"  {'reshape':<15} PyTorch: {pytorch_time*1000:>8.4f} ms", end="")
 
         if RUSTTORCH_AVAILABLE:
-            print("    RustTorch: Not yet implemented")
+            x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
+            rusttorch_time = benchmark_function(rusttorch.reshape, x_rust, list(new_shape), iterations=100)
+            print(f"    RustTorch: {rusttorch_time*1000:>8.4f} ms    {format_speedup(pytorch_time, rusttorch_time)}")
         else:
             print()
 
