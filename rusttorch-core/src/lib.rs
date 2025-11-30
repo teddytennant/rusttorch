@@ -10,6 +10,10 @@ pub mod memory;
 pub mod utils;
 pub mod data;
 
+// FFI module for C/C++ integration (feature-gated)
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 pub use error::{TensorError, Result};
 pub use tensor::{Tensor, TensorView, DType};
 pub use ops::*;

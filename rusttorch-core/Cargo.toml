@@ -7,16 +7,25 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+name = "rusttorch_core"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
 [dependencies]
 ndarray.workspace = true
 num-traits.workspace = true
 rayon.workspace = true
 rand.workspace = true
+num_cpus = "1.16"
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+
+[features]
+default = []
+ffi = []  # Enable C FFI exports for PyTorch integration
 
 [[bench]]
 name = "tensor_ops"
