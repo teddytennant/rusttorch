@@ -3,25 +3,70 @@
 use crate::tensor::{Tensor, TensorData};
 use crate::DType;
 use ndarray::{Array, IxDyn, Zip};
+use rayon::prelude::*;
+
+/// Threshold for using parallel operations (number of elements)
+/// Below this, sequential operations are faster due to threading overhead
+const PARALLEL_THRESHOLD: usize = 10_000;
 
 /// Element-wise addition of two tensors
+///
+/// Automatically uses parallel execution for large tensors (>= 10,000 elements)
 pub fn add(a: &Tensor, b: &Tensor) -> Tensor {
     assert_eq!(a.dtype(), b.dtype(), "Tensors must have the same dtype");
     assert_eq!(a.shape(), b.shape(), "Tensors must have the same shape for element-wise addition");
 
     let dtype = a.dtype();
+    let use_parallel = a.numel() >= PARALLEL_THRESHOLD;
+
     let data = match (a.data(), b.data()) {
         (TensorData::Float32(arr_a), TensorData::Float32(arr_b)) => {
-            TensorData::Float32(arr_a + arr_b)
+            if use_parallel {
+                let mut result = arr_a.clone();
+                result.as_slice_mut().unwrap()
+                    .par_iter_mut()
+                    .zip(arr_b.as_slice().unwrap().par_iter())
+                    .for_each(|(r, &b_val)| *r += b_val);
+                TensorData::Float32(result)
+            } else {
+                TensorData::Float32(arr_a + arr_b)
+            }
         }
         (TensorData::Float64(arr_a), TensorData::Float64(arr_b)) => {
-            TensorData::Float64(arr_a + arr_b)
+            if use_parallel {
+                let mut result = arr_a.clone();
+                result.as_slice_mut().unwrap()
+                    .par_iter_mut()
+                    .zip(arr_b.as_slice().unwrap().par_iter())
+                    .for_each(|(r, &b_val)| *r += b_val);
+                TensorData::Float64(result)
+            } else {
+                TensorData::Float64(arr_a + arr_b)
+            }
         }
         (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => {
-            TensorData::Int32(arr_a + arr_b)
+            if use_parallel {
+                let mut result = arr_a.clone();
+                result.as_slice_mut().unwrap()
+                    .par_iter_mut()
+                    .zip(arr_b.as_slice().unwrap().par_iter())
+                    .for_each(|(r, &b_val)| *r += b_val);
+                TensorData::Int32(result)
+            } else {
+                TensorData::Int32(arr_a + arr_b)
+            }
         }
         (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => {
-            TensorData::Int64(arr_a + arr_b)
+            if use_parallel {
+                let mut result = arr_a.clone();
+                result.as_slice_mut().unwrap()
+                    .par_iter_mut()
+                    .zip(arr_b.as_slice().unwrap().par_iter())
+                    .for_each(|(r, &b_val)| *r += b_val);
+                TensorData::Int64(result)
+            } else {
+                TensorData::Int64(arr_a + arr_b)
+            }
         }
         _ => panic!("Mismatched tensor data types"),
     };

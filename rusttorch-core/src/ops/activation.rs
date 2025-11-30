@@ -180,6 +180,183 @@ pub fn leaky_relu(tensor: &Tensor, alpha: f32) -> Tensor {
     Tensor::from_data(data, dtype)
 }
 
+/// ELU (Exponential Linear Unit) activation
+/// ELU(x) = x if x > 0, alpha * (exp(x) - 1) if x <= 0
+pub fn elu(tensor: &Tensor, alpha: f32) -> Tensor {
+    assert!(tensor.dtype().is_float(), "ELU requires floating-point tensors");
+    assert!(alpha > 0.0, "Alpha must be positive");
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| {
+                if x > 0.0 {
+                    x
+                } else {
+                    alpha * (x.exp() - 1.0)
+                }
+            }))
+        }
+        TensorData::Float64(arr) => {
+            let alpha = alpha as f64;
+            TensorData::Float64(arr.mapv(|x| {
+                if x > 0.0 {
+                    x
+                } else {
+                    alpha * (x.exp() - 1.0)
+                }
+            }))
+        }
+        _ => panic!("ELU only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
+/// SELU (Scaled Exponential Linear Unit) activation
+/// Self-normalizing activation function
+/// SELU(x) = scale * (max(0, x) + min(0, alpha * (exp(x) - 1)))
+/// where alpha ≈ 1.6733 and scale ≈ 1.0507
+pub fn selu(tensor: &Tensor) -> Tensor {
+    assert!(tensor.dtype().is_float(), "SELU requires floating-point tensors");
+
+    let alpha = 1.6732632423543772848170429916717;
+    let scale = 1.0507009873554804934193349852946;
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| {
+                scale as f32 * if x > 0.0 {
+                    x
+                } else {
+                    alpha as f32 * (x.exp() - 1.0)
+                }
+            }))
+        }
+        TensorData::Float64(arr) => {
+            TensorData::Float64(arr.mapv(|x| {
+                scale * if x > 0.0 {
+                    x
+                } else {
+                    alpha * (x.exp() - 1.0)
+                }
+            }))
+        }
+        _ => panic!("SELU only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
+/// Swish activation (also known as SiLU - Sigmoid Linear Unit)
+/// Swish(x) = x * sigmoid(x) = x / (1 + exp(-x))
+pub fn swish(tensor: &Tensor) -> Tensor {
+    assert!(tensor.dtype().is_float(), "Swish requires floating-point tensors");
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| x / (1.0 + (-x).exp())))
+        }
+        TensorData::Float64(arr) => {
+            TensorData::Float64(arr.mapv(|x| x / (1.0 + (-x).exp())))
+        }
+        _ => panic!("Swish only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
+/// Mish activation
+/// Mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))
+/// A smooth, non-monotonic activation function
+pub fn mish(tensor: &Tensor) -> Tensor {
+    assert!(tensor.dtype().is_float(), "Mish requires floating-point tensors");
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| {
+                // softplus(x) = ln(1 + exp(x))
+                // For numerical stability, use different formulas for different ranges
+                let softplus = if x > 20.0 {
+                    x  // For large x, softplus(x) ≈ x
+                } else {
+                    (1.0 + x.exp()).ln()
+                };
+                x * softplus.tanh()
+            }))
+        }
+        TensorData::Float64(arr) => {
+            TensorData::Float64(arr.mapv(|x| {
+                let softplus = if x > 20.0 {
+                    x
+                } else {
+                    (1.0 + x.exp()).ln()
+                };
+                x * softplus.tanh()
+            }))
+        }
+        _ => panic!("Mish only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
+/// Softplus activation
+/// Softplus(x) = ln(1 + exp(x))
+/// A smooth approximation of ReLU
+pub fn softplus(tensor: &Tensor) -> Tensor {
+    assert!(tensor.dtype().is_float(), "Softplus requires floating-point tensors");
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| {
+                // For numerical stability
+                if x > 20.0 {
+                    x
+                } else {
+                    (1.0 + x.exp()).ln()
+                }
+            }))
+        }
+        TensorData::Float64(arr) => {
+            TensorData::Float64(arr.mapv(|x| {
+                if x > 20.0 {
+                    x
+                } else {
+                    (1.0 + x.exp()).ln()
+                }
+            }))
+        }
+        _ => panic!("Softplus only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
+/// Softsign activation
+/// Softsign(x) = x / (1 + |x|)
+/// Similar to tanh but with polynomial tail decay
+pub fn softsign(tensor: &Tensor) -> Tensor {
+    assert!(tensor.dtype().is_float(), "Softsign requires floating-point tensors");
+
+    let dtype = tensor.dtype();
+    let data = match tensor.data() {
+        TensorData::Float32(arr) => {
+            TensorData::Float32(arr.mapv(|x| x / (1.0 + x.abs())))
+        }
+        TensorData::Float64(arr) => {
+            TensorData::Float64(arr.mapv(|x| x / (1.0 + x.abs())))
+        }
+        _ => panic!("Softsign only supports floating-point types"),
+    };
+
+    Tensor::from_data(data, dtype)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +416,54 @@ mod tests {
     fn test_softmax_dim_out_of_range() {
         let t = Tensor::ones(&[2, 3], DType::Float32);
         let _ = softmax(&t, 5);
+    }
+
+    #[test]
+    fn test_elu() {
+        let t = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], &[5]);
+        let e = elu(&t, 1.0);
+        assert_eq!(e.shape(), &[5]);
+    }
+
+    #[test]
+    fn test_selu() {
+        let t = Tensor::from_vec(vec![-1.0, 0.0, 1.0, 2.0], &[4]);
+        let s = selu(&t);
+        assert_eq!(s.shape(), &[4]);
+    }
+
+    #[test]
+    fn test_swish() {
+        let t = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], &[5]);
+        let sw = swish(&t);
+        assert_eq!(sw.shape(), &[5]);
+    }
+
+    #[test]
+    fn test_mish() {
+        let t = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], &[5]);
+        let m = mish(&t);
+        assert_eq!(m.shape(), &[5]);
+    }
+
+    #[test]
+    fn test_softplus() {
+        let t = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], &[5]);
+        let sp = softplus(&t);
+        assert_eq!(sp.shape(), &[5]);
+    }
+
+    #[test]
+    fn test_softsign() {
+        let t = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], &[5]);
+        let ss = softsign(&t);
+        assert_eq!(ss.shape(), &[5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Alpha must be positive")]
+    fn test_elu_negative_alpha() {
+        let t = Tensor::from_vec(vec![1.0], &[1]);
+        let _ = elu(&t, -0.5);
     }
 }

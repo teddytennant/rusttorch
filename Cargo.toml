@@ -15,6 +15,7 @@ homepage = "https://pytorch.org"
 ndarray = "0.15"
 num-traits = "0.2"
 rayon = "1.8"
+rand = "0.8"
 
 # Python bindings
 pyo3 = { version = "0.20", features = ["extension-module"] }
@@ -23,6 +24,7 @@ numpy = "0.20"
 # Development dependencies
 criterion = "0.5"
 proptest = "1.4"
+tempfile = "3.8"
 
 [profile.release]
 opt-level = 3
