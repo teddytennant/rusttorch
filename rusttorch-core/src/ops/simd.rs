@@ -4,12 +4,8 @@
 //! Currently uses auto-vectorization with iterator patterns optimized for LLVM.
 //! Future work: Explicit SIMD using std::simd (unstable) or packed_simd.
 
-use crate::tensor::{Tensor, TensorData};
-use crate::DType;
+use crate::tensor::{Tensor, TensorData, DType};
 use rayon::prelude::*;
-
-/// Threshold for using SIMD optimizations (elements)
-const SIMD_THRESHOLD: usize = 64;
 
 /// SIMD-optimized element-wise addition
 ///
@@ -74,12 +70,8 @@ pub fn add_simd(a: &Tensor, b: &Tensor) -> Tensor {
                 TensorData::Float64(arr_a + arr_b)
             }
         }
-        (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => {
-            TensorData::Int32(arr_a + arr_b)
-        }
-        (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => {
-            TensorData::Int64(arr_a + arr_b)
-        }
+        (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a + arr_b),
+        (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a + arr_b),
         _ => panic!("Mismatched tensor data types"),
     };
 
@@ -145,12 +137,8 @@ pub fn mul_simd(a: &Tensor, b: &Tensor) -> Tensor {
                 TensorData::Float64(arr_a * arr_b)
             }
         }
-        (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => {
-            TensorData::Int32(arr_a * arr_b)
-        }
-        (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => {
-            TensorData::Int64(arr_a * arr_b)
-        }
+        (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a * arr_b),
+        (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a * arr_b),
         _ => panic!("Mismatched tensor data types"),
     };
 

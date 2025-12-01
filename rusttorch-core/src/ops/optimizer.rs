@@ -8,9 +8,8 @@
 //!
 //! All functions return `Result` types for proper error handling.
 
-use crate::error::{TensorError, Result};
-use crate::tensor::{Tensor, TensorData};
-use crate::DType;
+use crate::error::{Result, TensorError};
+use crate::tensor::{Tensor, TensorData, DType};
 
 /// SGD (Stochastic Gradient Descent) parameter update
 ///
@@ -75,9 +74,7 @@ pub fn sgd_update(params: &Tensor, gradients: &Tensor, learning_rate: f64) -> Re
         (TensorData::Float32(p), TensorData::Float32(g)) => {
             TensorData::Float32(p - &(g * lr as f32))
         }
-        (TensorData::Float64(p), TensorData::Float64(g)) => {
-            TensorData::Float64(p - &(g * lr))
-        }
+        (TensorData::Float64(p), TensorData::Float64(g)) => TensorData::Float64(p - &(g * lr)),
         _ => {
             return Err(TensorError::DTypeMismatch {
                 expected: "float32 or float64".to_string(),
@@ -140,7 +137,7 @@ pub fn sgd_momentum_update(
     }
 
     // Validate momentum
-    if momentum < 0.0 || momentum >= 1.0 {
+    if !(0.0..1.0).contains(&momentum) {
         return Err(TensorError::InvalidArgument {
             parameter: "momentum".to_string(),
             reason: format!("must be in [0, 1), got {}", momentum),
@@ -152,29 +149,26 @@ pub fn sgd_momentum_update(
     let m = momentum;
 
     // Compute update
-    let (new_params_data, new_velocity_data) = match (
-        params.data(),
-        gradients.data(),
-        velocity.data(),
-    ) {
-        (TensorData::Float32(p), TensorData::Float32(g), TensorData::Float32(v)) => {
-            let new_v = v * m as f32 + g;
-            let new_p = p - &(&new_v * lr as f32);
-            (TensorData::Float32(new_p), TensorData::Float32(new_v))
-        }
-        (TensorData::Float64(p), TensorData::Float64(g), TensorData::Float64(v)) => {
-            let new_v = v * m + g;
-            let new_p = p - &(&new_v * lr);
-            (TensorData::Float64(new_p), TensorData::Float64(new_v))
-        }
-        _ => {
-            return Err(TensorError::DTypeMismatch {
-                expected: "float32 or float64".to_string(),
-                actual: format!("{}", params.dtype()),
-                context: "sgd_momentum_update (only floating-point supported)".to_string(),
-            })
-        }
-    };
+    let (new_params_data, new_velocity_data) =
+        match (params.data(), gradients.data(), velocity.data()) {
+            (TensorData::Float32(p), TensorData::Float32(g), TensorData::Float32(v)) => {
+                let new_v = v * m as f32 + g;
+                let new_p = p - &(&new_v * lr as f32);
+                (TensorData::Float32(new_p), TensorData::Float32(new_v))
+            }
+            (TensorData::Float64(p), TensorData::Float64(g), TensorData::Float64(v)) => {
+                let new_v = v * m + g;
+                let new_p = p - &(&new_v * lr);
+                (TensorData::Float64(new_p), TensorData::Float64(new_v))
+            }
+            _ => {
+                return Err(TensorError::DTypeMismatch {
+                    expected: "float32 or float64".to_string(),
+                    actual: format!("{}", params.dtype()),
+                    context: "sgd_momentum_update (only floating-point supported)".to_string(),
+                })
+            }
+        };
 
     Ok((
         Tensor::from_data(new_params_data, dtype),
@@ -403,8 +397,17 @@ pub fn adamw_update(
     }
 
     // First do regular Adam update
-    let (params_after_adam, new_m, new_v) =
-        adam_update(params, gradients, m, v, learning_rate, beta1, beta2, epsilon, timestep)?;
+    let (params_after_adam, new_m, new_v) = adam_update(
+        params,
+        gradients,
+        m,
+        v,
+        learning_rate,
+        beta1,
+        beta2,
+        epsilon,
+        timestep,
+    )?;
 
     // Then apply weight decay directly to parameters
     if weight_decay > 0.0 {
@@ -527,7 +530,7 @@ mod tests {
         let result = sgd_update(&params, &grads, 0.1);
         assert!(result.is_err());
         match result {
-            Err(TensorError::ShapeMismatch { .. }) => {}, // Expected
+            Err(TensorError::ShapeMismatch { .. }) => {} // Expected
             _ => panic!("Expected ShapeMismatch error"),
         }
     }
@@ -539,7 +542,7 @@ mod tests {
         let result = sgd_update(&params, &grads, -0.1);
         assert!(result.is_err());
         match result {
-            Err(TensorError::InvalidArgument { .. }) => {}, // Expected
+            Err(TensorError::InvalidArgument { .. }) => {} // Expected
             _ => panic!("Expected InvalidArgument error"),
         }
     }
@@ -553,7 +556,7 @@ mod tests {
         let result = adam_update(&params, &grads, &m, &v, 0.001, 0.9, 0.999, 1e-8, 0);
         assert!(result.is_err());
         match result {
-            Err(TensorError::InvalidArgument { .. }) => {}, // Expected
+            Err(TensorError::InvalidArgument { .. }) => {} // Expected
             _ => panic!("Expected InvalidArgument error"),
         }
     }

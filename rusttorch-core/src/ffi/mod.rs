@@ -11,11 +11,11 @@
 //! - Memory is not accessed after being freed
 //! - No data races occur (single-threaded or properly synchronized)
 
-pub mod tensor;
 pub mod ops;
+pub mod tensor;
 
-pub use tensor::{CTensor, CTensorDescriptor};
 pub use ops::*;
+pub use tensor::{CTensor, CTensorDescriptor};
 
 /// Initialize RustTorch FFI layer
 ///

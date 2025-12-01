@@ -78,17 +78,8 @@ mod tests {
 
     #[test]
     fn test_broadcast_shapes() {
-        assert_eq!(
-            broadcast_shapes(&[3, 1], &[1, 4]),
-            Some(vec![3, 4])
-        );
-        assert_eq!(
-            broadcast_shapes(&[2, 3, 4], &[4]),
-            Some(vec![2, 3, 4])
-        );
-        assert_eq!(
-            broadcast_shapes(&[3, 5], &[3, 4]),
-            None
-        );
+        assert_eq!(broadcast_shapes(&[3, 1], &[1, 4]), Some(vec![3, 4]));
+        assert_eq!(broadcast_shapes(&[2, 3, 4], &[4]), Some(vec![2, 3, 4]));
+        assert_eq!(broadcast_shapes(&[3, 5], &[3, 4]), None);
     }
 }

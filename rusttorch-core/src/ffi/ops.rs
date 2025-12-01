@@ -4,7 +4,7 @@
 //! Each function accepts raw pointers and performs the operation, writing results
 //! to the output buffer.
 
-use super::tensor::{CTensorDescriptor, CResult, c_tensor_to_rust, rust_tensor_to_c};
+use super::tensor::{c_tensor_to_rust, rust_tensor_to_c, CResult, CTensorDescriptor};
 use crate::ops;
 
 // ============================================================================
@@ -28,11 +28,13 @@ pub unsafe extern "C" fn rusttorch_add(
     let out_desc = &*out;
 
     match (c_tensor_to_rust(a_desc), c_tensor_to_rust(b_desc)) {
-        (Ok(tensor_a), Ok(tensor_b)) => {
-            let result = ops::add(&tensor_a, &tensor_b);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        (Ok(tensor_a), Ok(tensor_b)) => match ops::add(&tensor_a, &tensor_b) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         (Err(e), _) | (_, Err(e)) => CResult::err(e),
     }
 }
@@ -49,11 +51,13 @@ pub unsafe extern "C" fn rusttorch_mul(
     let out_desc = &*out;
 
     match (c_tensor_to_rust(a_desc), c_tensor_to_rust(b_desc)) {
-        (Ok(tensor_a), Ok(tensor_b)) => {
-            let result = ops::mul(&tensor_a, &tensor_b);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        (Ok(tensor_a), Ok(tensor_b)) => match ops::mul(&tensor_a, &tensor_b) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         (Err(e), _) | (_, Err(e)) => CResult::err(e),
     }
 }
@@ -70,11 +74,13 @@ pub unsafe extern "C" fn rusttorch_sub(
     let out_desc = &*out;
 
     match (c_tensor_to_rust(a_desc), c_tensor_to_rust(b_desc)) {
-        (Ok(tensor_a), Ok(tensor_b)) => {
-            let result = ops::sub(&tensor_a, &tensor_b);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        (Ok(tensor_a), Ok(tensor_b)) => match ops::sub(&tensor_a, &tensor_b) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         (Err(e), _) | (_, Err(e)) => CResult::err(e),
     }
 }
@@ -91,11 +97,13 @@ pub unsafe extern "C" fn rusttorch_div(
     let out_desc = &*out;
 
     match (c_tensor_to_rust(a_desc), c_tensor_to_rust(b_desc)) {
-        (Ok(tensor_a), Ok(tensor_b)) => {
-            let result = ops::div(&tensor_a, &tensor_b);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        (Ok(tensor_a), Ok(tensor_b)) => match ops::div(&tensor_a, &tensor_b) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         (Err(e), _) | (_, Err(e)) => CResult::err(e),
     }
 }
@@ -133,11 +141,13 @@ pub unsafe extern "C" fn rusttorch_sigmoid(
     let out_desc = &*out;
 
     match c_tensor_to_rust(in_desc) {
-        Ok(tensor) => {
-            let result = ops::sigmoid(&tensor);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        Ok(tensor) => match ops::sigmoid(&tensor) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         Err(e) => CResult::err(e),
     }
 }
@@ -152,11 +162,13 @@ pub unsafe extern "C" fn rusttorch_tanh(
     let out_desc = &*out;
 
     match c_tensor_to_rust(in_desc) {
-        Ok(tensor) => {
-            let result = ops::tanh(&tensor);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        Ok(tensor) => match ops::tanh(&tensor) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         Err(e) => CResult::err(e),
     }
 }
@@ -171,11 +183,13 @@ pub unsafe extern "C" fn rusttorch_gelu(
     let out_desc = &*out;
 
     match c_tensor_to_rust(in_desc) {
-        Ok(tensor) => {
-            let result = ops::gelu(&tensor);
-            rust_tensor_to_c(&result, out_desc.data);
-            CResult::ok()
-        }
+        Ok(tensor) => match ops::gelu(&tensor) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
+            }
+            Err(e) => CResult::err(e),
+        },
         Err(e) => CResult::err(e),
     }
 }
@@ -292,17 +306,13 @@ pub unsafe extern "C" fn rusttorch_matmul(
     let out_desc = &*out;
 
     match (c_tensor_to_rust(a_desc), c_tensor_to_rust(b_desc)) {
-        (Ok(tensor_a), Ok(tensor_b)) => {
-            match ops::matmul(&tensor_a, &tensor_b) {
-                Ok(result) => {
-                    rust_tensor_to_c(&result, out_desc.data);
-                    CResult::ok()
-                }
-                Err(e) => CResult::err(crate::error::TensorError::Other {
-                    message: e,
-                }),
+        (Ok(tensor_a), Ok(tensor_b)) => match ops::matmul(&tensor_a, &tensor_b) {
+            Ok(result) => {
+                rust_tensor_to_c(&result, out_desc.data);
+                CResult::ok()
             }
-        }
+            Err(e) => CResult::err(crate::error::TensorError::Other { message: e }),
+        },
         (Err(e), _) | (_, Err(e)) => CResult::err(e),
     }
 }
@@ -335,11 +345,7 @@ pub unsafe extern "C" fn rusttorch_transpose(
 /// This is a simpler version for initial C++ integration.
 /// Assumes contiguous row-major float32 data.
 #[no_mangle]
-pub unsafe extern "C" fn rusttorch_relu_f32(
-    input: *const f32,
-    output: *mut f32,
-    size: usize,
-) {
+pub unsafe extern "C" fn rusttorch_relu_f32(input: *const f32, output: *mut f32, size: usize) {
     let input_slice = std::slice::from_raw_parts(input, size);
     let output_slice = std::slice::from_raw_parts_mut(output, size);
 

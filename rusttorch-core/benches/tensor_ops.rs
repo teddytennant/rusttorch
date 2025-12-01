@@ -1,26 +1,22 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rusttorch_core::{Tensor, DType};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rusttorch_core::ops::{
-    elementwise::{add, mul, sub, div, add_scalar, mul_scalar},
-    reduction::{sum, mean, max, min, sum_dim, mean_dim},
-    activation::{relu, leaky_relu, sigmoid, tanh, gelu, softmax},
-    matrix::{matmul, transpose, reshape},
+    activation::{gelu, leaky_relu, relu, sigmoid, softmax, tanh},
+    elementwise::{add, add_scalar, div, mul, mul_scalar, sub},
+    matrix::{matmul, reshape, transpose},
+    reduction::{max, mean, mean_dim, min, sum, sum_dim},
 };
+use rusttorch_core::{DType, Tensor};
 
 fn bench_tensor_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("tensor_creation");
 
     for size in [100, 500, 1000].iter() {
         group.bench_with_input(BenchmarkId::new("zeros", size), size, |b, &s| {
-            b.iter(|| {
-                black_box(Tensor::zeros(&[s, s], DType::Float32))
-            })
+            b.iter(|| black_box(Tensor::zeros(&[s, s], DType::Float32)))
         });
 
         group.bench_with_input(BenchmarkId::new("ones", size), size, |b, &s| {
-            b.iter(|| {
-                black_box(Tensor::ones(&[s, s], DType::Float32))
-            })
+            b.iter(|| black_box(Tensor::ones(&[s, s], DType::Float32)))
         });
     }
 
@@ -30,17 +26,9 @@ fn bench_tensor_creation(c: &mut Criterion) {
 fn bench_tensor_properties(c: &mut Criterion) {
     let tensor = Tensor::zeros(&[1000, 1000], DType::Float32);
 
-    c.bench_function("tensor_shape", |b| {
-        b.iter(|| {
-            black_box(tensor.shape())
-        })
-    });
+    c.bench_function("tensor_shape", |b| b.iter(|| black_box(tensor.shape())));
 
-    c.bench_function("tensor_numel", |b| {
-        b.iter(|| {
-            black_box(tensor.numel())
-        })
-    });
+    c.bench_function("tensor_numel", |b| b.iter(|| black_box(tensor.numel())));
 }
 
 fn bench_elementwise_ops(c: &mut Criterion) {
@@ -51,39 +39,27 @@ fn bench_elementwise_ops(c: &mut Criterion) {
         let b = Tensor::ones(&[*size, *size], DType::Float32);
 
         group.bench_with_input(BenchmarkId::new("add", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(add(&a, &b))
-            })
+            bench.iter(|| black_box(add(&a, &b)))
         });
 
         group.bench_with_input(BenchmarkId::new("mul", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(mul(&a, &b))
-            })
+            bench.iter(|| black_box(mul(&a, &b)))
         });
 
         group.bench_with_input(BenchmarkId::new("sub", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(sub(&a, &b))
-            })
+            bench.iter(|| black_box(sub(&a, &b)))
         });
 
         group.bench_with_input(BenchmarkId::new("div", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(div(&a, &b))
-            })
+            bench.iter(|| black_box(div(&a, &b)))
         });
 
         group.bench_with_input(BenchmarkId::new("add_scalar", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(add_scalar(&a, 2.0))
-            })
+            bench.iter(|| black_box(add_scalar(&a, 2.0)))
         });
 
         group.bench_with_input(BenchmarkId::new("mul_scalar", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(mul_scalar(&a, 2.0))
-            })
+            bench.iter(|| black_box(mul_scalar(&a, 2.0)))
         });
     }
 
@@ -97,39 +73,27 @@ fn bench_reduction_ops(c: &mut Criterion) {
         let tensor = Tensor::ones(&[*size, *size], DType::Float32);
 
         group.bench_with_input(BenchmarkId::new("sum", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(sum(&tensor))
-            })
+            bench.iter(|| black_box(sum(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("mean", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(mean(&tensor))
-            })
+            bench.iter(|| black_box(mean(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("max", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(max(&tensor))
-            })
+            bench.iter(|| black_box(max(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("min", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(min(&tensor))
-            })
+            bench.iter(|| black_box(min(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("sum_dim", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(sum_dim(&tensor, 0))
-            })
+            bench.iter(|| black_box(sum_dim(&tensor, 0)))
         });
 
         group.bench_with_input(BenchmarkId::new("mean_dim", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(mean_dim(&tensor, 0))
-            })
+            bench.iter(|| black_box(mean_dim(&tensor, 0)))
         });
     }
 
@@ -143,39 +107,27 @@ fn bench_activation_ops(c: &mut Criterion) {
         let tensor = Tensor::ones(&[*size, *size], DType::Float32);
 
         group.bench_with_input(BenchmarkId::new("relu", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(relu(&tensor))
-            })
+            bench.iter(|| black_box(relu(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("leaky_relu", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(leaky_relu(&tensor, 0.01))
-            })
+            bench.iter(|| black_box(leaky_relu(&tensor, 0.01)))
         });
 
         group.bench_with_input(BenchmarkId::new("sigmoid", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(sigmoid(&tensor))
-            })
+            bench.iter(|| black_box(sigmoid(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("tanh", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(tanh(&tensor))
-            })
+            bench.iter(|| black_box(tanh(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("gelu", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(gelu(&tensor))
-            })
+            bench.iter(|| black_box(gelu(&tensor)))
         });
 
         group.bench_with_input(BenchmarkId::new("softmax", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(softmax(&tensor, 1))
-            })
+            bench.iter(|| black_box(softmax(&tensor, 1)))
         });
     }
 
@@ -195,11 +147,7 @@ fn bench_matrix_ops(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("matmul", format!("{}x{}x{}", m, k, n)),
             &(m, k, n),
-            |bench, _| {
-                bench.iter(|| {
-                    black_box(matmul(&a, &b).unwrap())
-                })
-            },
+            |bench, _| bench.iter(|| black_box(matmul(&a, &b).unwrap())),
         );
     }
 
@@ -208,9 +156,7 @@ fn bench_matrix_ops(c: &mut Criterion) {
         let tensor = Tensor::ones(&[*size, *size], DType::Float32);
 
         group.bench_with_input(BenchmarkId::new("transpose", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(transpose(&tensor))
-            })
+            bench.iter(|| black_box(transpose(&tensor)))
         });
     }
 
@@ -220,9 +166,7 @@ fn bench_matrix_ops(c: &mut Criterion) {
         let new_shape = [*size * *size / 2, 2];
 
         group.bench_with_input(BenchmarkId::new("reshape", size), size, |bench, _| {
-            bench.iter(|| {
-                black_box(reshape(&tensor, &new_shape).unwrap())
-            })
+            bench.iter(|| black_box(reshape(&tensor, &new_shape).unwrap()))
         });
     }
 

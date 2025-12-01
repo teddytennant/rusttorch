@@ -8,9 +8,8 @@
 //! 2. Dimensions are compatible if they are equal or one of them is 1
 //! 3. The result shape is the maximum along each dimension
 
-use crate::error::{TensorError, Result};
-use crate::tensor::{Tensor, TensorData};
-use crate::DType;
+use crate::error::{Result, TensorError};
+use crate::tensor::{Tensor, TensorData, DType};
 use ndarray::{Array, IxDyn};
 
 /// Check if two shapes are broadcastable
@@ -122,68 +121,80 @@ pub fn broadcast_tensors(a: &Tensor, b: &Tensor) -> Result<(Tensor, Tensor)> {
 }
 
 // Helper functions to broadcast arrays
-fn broadcast_array_f32(arr: &Array<f32, IxDyn>, target_shape: &[usize]) -> Result<Array<f32, IxDyn>> {
+fn broadcast_array_f32(
+    arr: &Array<f32, IxDyn>,
+    target_shape: &[usize],
+) -> Result<Array<f32, IxDyn>> {
     arr.broadcast(IxDyn(target_shape))
         .map(|broadcasted| broadcasted.to_owned())
-        .map_err(|e| TensorError::BroadcastError {
+        .ok_or_else(|| TensorError::BroadcastError {
             shape_a: arr.shape().to_vec(),
             shape_b: target_shape.to_vec(),
-            reason: format!("ndarray broadcast failed: {}", e),
+            reason: "ndarray broadcast failed".to_string(),
         })
 }
 
-fn broadcast_array_f64(arr: &Array<f64, IxDyn>, target_shape: &[usize]) -> Result<Array<f64, IxDyn>> {
+fn broadcast_array_f64(
+    arr: &Array<f64, IxDyn>,
+    target_shape: &[usize],
+) -> Result<Array<f64, IxDyn>> {
     arr.broadcast(IxDyn(target_shape))
         .map(|broadcasted| broadcasted.to_owned())
-        .map_err(|e| TensorError::BroadcastError {
+        .ok_or_else(|| TensorError::BroadcastError {
             shape_a: arr.shape().to_vec(),
             shape_b: target_shape.to_vec(),
-            reason: format!("ndarray broadcast failed: {}", e),
+            reason: "ndarray broadcast failed".to_string(),
         })
 }
 
-fn broadcast_array_i32(arr: &Array<i32, IxDyn>, target_shape: &[usize]) -> Result<Array<i32, IxDyn>> {
+fn broadcast_array_i32(
+    arr: &Array<i32, IxDyn>,
+    target_shape: &[usize],
+) -> Result<Array<i32, IxDyn>> {
     arr.broadcast(IxDyn(target_shape))
         .map(|broadcasted| broadcasted.to_owned())
-        .map_err(|e| TensorError::BroadcastError {
+        .ok_or_else(|| TensorError::BroadcastError {
             shape_a: arr.shape().to_vec(),
             shape_b: target_shape.to_vec(),
-            reason: format!("ndarray broadcast failed: {}", e),
+            reason: "ndarray broadcast failed".to_string(),
         })
 }
 
-fn broadcast_array_i64(arr: &Array<i64, IxDyn>, target_shape: &[usize]) -> Result<Array<i64, IxDyn>> {
+fn broadcast_array_i64(
+    arr: &Array<i64, IxDyn>,
+    target_shape: &[usize],
+) -> Result<Array<i64, IxDyn>> {
     arr.broadcast(IxDyn(target_shape))
         .map(|broadcasted| broadcasted.to_owned())
-        .map_err(|e| TensorError::BroadcastError {
+        .ok_or_else(|| TensorError::BroadcastError {
             shape_a: arr.shape().to_vec(),
             shape_b: target_shape.to_vec(),
-            reason: format!("ndarray broadcast failed: {}", e),
+            reason: "ndarray broadcast failed".to_string(),
         })
 }
 
 /// Element-wise addition with broadcasting
 pub fn add_broadcast(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let (bc_a, bc_b) = broadcast_tensors(a, b)?;
-    Ok(crate::ops::add(&bc_a, &bc_b))
+    crate::ops::add(&bc_a, &bc_b)
 }
 
 /// Element-wise multiplication with broadcasting
 pub fn mul_broadcast(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let (bc_a, bc_b) = broadcast_tensors(a, b)?;
-    Ok(crate::ops::mul(&bc_a, &bc_b))
+    crate::ops::mul(&bc_a, &bc_b)
 }
 
 /// Element-wise subtraction with broadcasting
 pub fn sub_broadcast(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let (bc_a, bc_b) = broadcast_tensors(a, b)?;
-    Ok(crate::ops::sub(&bc_a, &bc_b))
+    crate::ops::sub(&bc_a, &bc_b)
 }
 
 /// Element-wise division with broadcasting
 pub fn div_broadcast(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let (bc_a, bc_b) = broadcast_tensors(a, b)?;
-    Ok(crate::ops::div(&bc_a, &bc_b))
+    crate::ops::div(&bc_a, &bc_b)
 }
 
 #[cfg(test)]
@@ -206,22 +217,10 @@ mod tests {
 
     #[test]
     fn test_broadcast_shape() {
-        assert_eq!(
-            broadcast_shape(&[3, 4], &[3, 4]).unwrap(),
-            vec![3, 4]
-        );
-        assert_eq!(
-            broadcast_shape(&[3, 4], &[1, 4]).unwrap(),
-            vec![3, 4]
-        );
-        assert_eq!(
-            broadcast_shape(&[3, 4], &[4]).unwrap(),
-            vec![3, 4]
-        );
-        assert_eq!(
-            broadcast_shape(&[3, 4, 5], &[4, 5]).unwrap(),
-            vec![3, 4, 5]
-        );
+        assert_eq!(broadcast_shape(&[3, 4], &[3, 4]).unwrap(), vec![3, 4]);
+        assert_eq!(broadcast_shape(&[3, 4], &[1, 4]).unwrap(), vec![3, 4]);
+        assert_eq!(broadcast_shape(&[3, 4], &[4]).unwrap(), vec![3, 4]);
+        assert_eq!(broadcast_shape(&[3, 4, 5], &[4, 5]).unwrap(), vec![3, 4, 5]);
         assert_eq!(
             broadcast_shape(&[1, 3, 1], &[2, 1, 4]).unwrap(),
             vec![2, 3, 4]

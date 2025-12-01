@@ -1,8 +1,8 @@
 //! C-compatible tensor types for FFI
 
-use std::os::raw::{c_int, c_void};
-use crate::tensor::{Tensor, DType};
 use crate::error::TensorError;
+use crate::tensor::{DType, Tensor};
+use std::os::raw::{c_int, c_void};
 
 /// C-compatible tensor descriptor
 ///
@@ -54,9 +54,8 @@ impl CResult {
     /// Create error result
     pub fn err(error: TensorError) -> Self {
         use std::ffi::CString;
-        let msg = CString::new(error.to_string()).unwrap_or_else(|_| {
-            CString::new("Unknown error").unwrap()
-        });
+        let msg = CString::new(error.to_string())
+            .unwrap_or_else(|_| CString::new("Unknown error").unwrap());
         CResult {
             success: false,
             error_msg: msg.into_raw(),
@@ -108,10 +107,12 @@ pub unsafe fn c_tensor_to_rust(desc: &CTensorDescriptor) -> Result<Tensor, Tenso
         1 => DType::Float64,
         2 => DType::Int32,
         3 => DType::Int64,
-        _ => return Err(TensorError::InvalidArgument {
-            parameter: "dtype".to_string(),
-            reason: format!("Unknown dtype code: {}", desc.dtype),
-        }),
+        _ => {
+            return Err(TensorError::InvalidArgument {
+                parameter: "dtype".to_string(),
+                reason: format!("Unknown dtype code: {}", desc.dtype),
+            })
+        }
     };
 
     // Extract shape

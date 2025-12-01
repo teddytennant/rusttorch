@@ -8,9 +8,8 @@
 //!
 //! All functions return `Result<f64, TensorError>` for proper error handling.
 
-use crate::error::{TensorError, Result};
-use crate::tensor::{Tensor, TensorData};
-use crate::DType;
+use crate::error::{Result, TensorError};
+use crate::tensor::{Tensor, TensorData, DType};
 
 /// Mean Squared Error loss
 ///
@@ -238,7 +237,11 @@ pub fn smooth_l1_loss(predictions: &Tensor, targets: &Tensor, beta: f64) -> Resu
 ///
 /// # Errors
 /// Returns error if shapes don't match, tensors are empty, or epsilon is invalid
-pub fn binary_cross_entropy_loss(predictions: &Tensor, targets: &Tensor, epsilon: f64) -> Result<f64> {
+pub fn binary_cross_entropy_loss(
+    predictions: &Tensor,
+    targets: &Tensor,
+    epsilon: f64,
+) -> Result<f64> {
     // Validate shapes match
     if predictions.shape() != targets.shape() {
         return Err(TensorError::ShapeMismatch {
@@ -386,7 +389,10 @@ mod tests {
         let pred = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]);
         let target = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]);
         let loss = mse_loss(&pred, &target).unwrap();
-        assert!((loss - 0.0).abs() < 1e-6, "Perfect predictions should have zero loss");
+        assert!(
+            (loss - 0.0).abs() < 1e-6,
+            "Perfect predictions should have zero loss"
+        );
     }
 
     #[test]
@@ -444,7 +450,7 @@ mod tests {
         let result = mse_loss(&pred, &target);
         assert!(result.is_err());
         match result {
-            Err(TensorError::ShapeMismatch { .. }) => {}, // Expected
+            Err(TensorError::ShapeMismatch { .. }) => {} // Expected
             _ => panic!("Expected ShapeMismatch error"),
         }
     }
@@ -456,7 +462,7 @@ mod tests {
         let result = mse_loss(&pred, &target);
         assert!(result.is_err());
         match result {
-            Err(TensorError::DTypeMismatch { .. }) => {}, // Expected
+            Err(TensorError::DTypeMismatch { .. }) => {} // Expected
             _ => panic!("Expected DTypeMismatch error"),
         }
     }
@@ -468,7 +474,7 @@ mod tests {
         let result = mse_loss(&pred, &target);
         assert!(result.is_err());
         match result {
-            Err(TensorError::EmptyTensor { .. }) => {}, // Expected
+            Err(TensorError::EmptyTensor { .. }) => {} // Expected
             _ => panic!("Expected EmptyTensor error"),
         }
     }

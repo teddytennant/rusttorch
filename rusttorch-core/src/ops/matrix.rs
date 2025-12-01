@@ -6,7 +6,7 @@
 //! - Reshape
 
 use crate::tensor::{DType, Tensor, TensorData};
-use ndarray::{Array, IxDyn, s};
+use ndarray::{Array, IxDyn};
 
 /// Matrix multiplication
 ///
@@ -72,11 +72,17 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     match (a.data(), b.data()) {
         (TensorData::Float32(a_arr), TensorData::Float32(b_arr)) => {
             let result = matmul_float32(a_arr, b_arr)?;
-            Ok(Tensor::from_data(TensorData::Float32(result), DType::Float32))
+            Ok(Tensor::from_data(
+                TensorData::Float32(result),
+                DType::Float32,
+            ))
         }
         (TensorData::Float64(a_arr), TensorData::Float64(b_arr)) => {
             let result = matmul_float64(a_arr, b_arr)?;
-            Ok(Tensor::from_data(TensorData::Float64(result), DType::Float64))
+            Ok(Tensor::from_data(
+                TensorData::Float64(result),
+                DType::Float64,
+            ))
         }
         (TensorData::Int32(a_arr), TensorData::Int32(b_arr)) => {
             let result = matmul_int32(a_arr, b_arr)?;
@@ -127,10 +133,7 @@ fn matmul_float64(
     Err("Batched matrix multiplication not yet implemented".to_string())
 }
 
-fn matmul_int32(
-    a: &Array<i32, IxDyn>,
-    b: &Array<i32, IxDyn>,
-) -> Result<Array<i32, IxDyn>, String> {
+fn matmul_int32(a: &Array<i32, IxDyn>, b: &Array<i32, IxDyn>) -> Result<Array<i32, IxDyn>, String> {
     let a_shape = a.shape();
     let b_shape = b.shape();
 
@@ -144,10 +147,7 @@ fn matmul_int32(
     Err("Batched matrix multiplication not yet implemented".to_string())
 }
 
-fn matmul_int64(
-    a: &Array<i64, IxDyn>,
-    b: &Array<i64, IxDyn>,
-) -> Result<Array<i64, IxDyn>, String> {
+fn matmul_int64(a: &Array<i64, IxDyn>, b: &Array<i64, IxDyn>) -> Result<Array<i64, IxDyn>, String> {
     let a_shape = a.shape();
     let b_shape = b.shape();
 

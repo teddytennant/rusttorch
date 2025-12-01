@@ -8,7 +8,6 @@
 
 use crate::tensor::{Tensor, TensorData};
 use crate::DType;
-use ndarray::Array;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -46,9 +45,7 @@ pub fn load_csv<P: AsRef<Path>>(
             .map(|s| s.trim().parse::<f32>())
             .collect();
 
-        let values = values.map_err(|e| {
-            format!("Failed to parse line {} as floats: {}", i, e)
-        })?;
+        let values = values.map_err(|e| format!("Failed to parse line {} as floats: {}", i, e))?;
 
         if num_cols == 0 {
             num_cols = values.len();
@@ -138,7 +135,7 @@ pub fn create_batches(data: &Tensor, batch_size: usize, drop_last: bool) -> Vec<
     let num_batches = if drop_last {
         num_samples / batch_size
     } else {
-        (num_samples + batch_size - 1) / batch_size
+        num_samples.div_ceil(batch_size)
     };
 
     let mut batches = Vec::with_capacity(num_batches);
@@ -155,9 +152,7 @@ pub fn create_batches(data: &Tensor, batch_size: usize, drop_last: bool) -> Vec<
                 }
 
                 let batch_data: Vec<f32> = (start..end)
-                    .flat_map(|row| {
-                        (0..num_features).map(move |col| arr[[row, col]])
-                    })
+                    .flat_map(|row| (0..num_features).map(move |col| arr[[row, col]]))
                     .collect();
 
                 batches.push(Tensor::from_vec(
@@ -177,9 +172,7 @@ pub fn create_batches(data: &Tensor, batch_size: usize, drop_last: bool) -> Vec<
                 }
 
                 let batch_data: Vec<f32> = (start..end)
-                    .flat_map(|row| {
-                        (0..num_features).map(move |col| arr[[row, col]] as f32)
-                    })
+                    .flat_map(|row| (0..num_features).map(move |col| arr[[row, col]] as f32))
                     .collect();
 
                 batches.push(Tensor::from_vec(
@@ -227,11 +220,11 @@ pub fn train_val_test_split(
     shuffle: bool,
 ) -> (Tensor, Tensor, Tensor) {
     assert!(
-        train_ratio > 0.0 && train_ratio < 1.0,
+        (0.0..1.0).contains(&train_ratio),
         "train_ratio must be in (0, 1)"
     );
     assert!(
-        val_ratio >= 0.0 && val_ratio < 1.0,
+        (0.0..1.0).contains(&val_ratio),
         "val_ratio must be in [0, 1)"
     );
     assert!(
@@ -244,7 +237,7 @@ pub fn train_val_test_split(
 
     let num_train = (num_samples as f64 * train_ratio) as usize;
     let num_val = (num_samples as f64 * val_ratio) as usize;
-    let num_test = num_samples - num_train - num_val;
+    let _num_test = num_samples - num_train - num_val;
 
     let indices: Vec<usize> = if shuffle {
         shuffle_indices(num_samples)
@@ -268,9 +261,7 @@ pub fn train_val_test_split(
             TensorData::Float64(arr) => {
                 let subset_data: Vec<f32> = subset_indices
                     .iter()
-                    .flat_map(|&idx| {
-                        (0..num_features).map(move |col| arr[[idx, col]] as f32)
-                    })
+                    .flat_map(|&idx| (0..num_features).map(move |col| arr[[idx, col]] as f32))
                     .collect();
                 Tensor::from_vec(subset_data, &[subset_indices.len(), num_features])
             }

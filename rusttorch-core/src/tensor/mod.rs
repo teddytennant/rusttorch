@@ -5,14 +5,16 @@
 //! safety guarantees.
 
 pub mod dtype;
-pub mod storage;
 pub mod shape;
+pub mod storage;
+pub mod view;
 
+use crate::error::{Result, TensorError};
 pub use dtype::DType;
-use crate::error::{TensorError, Result};
 use ndarray::{Array, IxDyn};
 use std::fmt;
 use std::sync::Arc;
+pub use view::{TensorView as ZeroCopyView, TensorViewMut as ZeroCopyViewMut};
 
 /// A multi-dimensional tensor with dynamic shape
 #[derive(Debug, Clone)]
@@ -63,8 +65,8 @@ impl Tensor {
 
     /// Create a tensor from a Vec of data (f32)
     pub fn from_vec(data: Vec<f32>, shape: &[usize]) -> Self {
-        let array = Array::from_shape_vec(IxDyn(shape), data)
-            .expect("Shape and data length must match");
+        let array =
+            Array::from_shape_vec(IxDyn(shape), data).expect("Shape and data length must match");
         Tensor {
             data: Arc::new(TensorData::Float32(array)),
             dtype: DType::Float32,
@@ -73,11 +75,12 @@ impl Tensor {
 
     /// Create a Float32 tensor from a Vec with error handling
     pub fn from_vec_f32(data: Vec<f32>, shape: &[usize]) -> Result<Self> {
-        let array = Array::from_shape_vec(IxDyn(shape), data)
-            .map_err(|e| TensorError::InvalidArgument {
+        let array = Array::from_shape_vec(IxDyn(shape), data).map_err(|e| {
+            TensorError::InvalidArgument {
                 parameter: "shape".to_string(),
                 reason: format!("Shape and data length mismatch: {}", e),
-            })?;
+            }
+        })?;
         Ok(Tensor {
             data: Arc::new(TensorData::Float32(array)),
             dtype: DType::Float32,
@@ -86,11 +89,12 @@ impl Tensor {
 
     /// Create a Float64 tensor from a Vec
     pub fn from_vec_f64(data: Vec<f64>, shape: &[usize]) -> Result<Self> {
-        let array = Array::from_shape_vec(IxDyn(shape), data)
-            .map_err(|e| TensorError::InvalidArgument {
+        let array = Array::from_shape_vec(IxDyn(shape), data).map_err(|e| {
+            TensorError::InvalidArgument {
                 parameter: "shape".to_string(),
                 reason: format!("Shape and data length mismatch: {}", e),
-            })?;
+            }
+        })?;
         Ok(Tensor {
             data: Arc::new(TensorData::Float64(array)),
             dtype: DType::Float64,
@@ -99,11 +103,12 @@ impl Tensor {
 
     /// Create an Int32 tensor from a Vec
     pub fn from_vec_i32(data: Vec<i32>, shape: &[usize]) -> Result<Self> {
-        let array = Array::from_shape_vec(IxDyn(shape), data)
-            .map_err(|e| TensorError::InvalidArgument {
+        let array = Array::from_shape_vec(IxDyn(shape), data).map_err(|e| {
+            TensorError::InvalidArgument {
                 parameter: "shape".to_string(),
                 reason: format!("Shape and data length mismatch: {}", e),
-            })?;
+            }
+        })?;
         Ok(Tensor {
             data: Arc::new(TensorData::Int32(array)),
             dtype: DType::Int32,
@@ -112,11 +117,12 @@ impl Tensor {
 
     /// Create an Int64 tensor from a Vec
     pub fn from_vec_i64(data: Vec<i64>, shape: &[usize]) -> Result<Self> {
-        let array = Array::from_shape_vec(IxDyn(shape), data)
-            .map_err(|e| TensorError::InvalidArgument {
+        let array = Array::from_shape_vec(IxDyn(shape), data).map_err(|e| {
+            TensorError::InvalidArgument {
                 parameter: "shape".to_string(),
                 reason: format!("Shape and data length mismatch: {}", e),
-            })?;
+            }
+        })?;
         Ok(Tensor {
             data: Arc::new(TensorData::Int64(array)),
             dtype: DType::Int64,
@@ -145,13 +151,12 @@ impl Tensor {
 
     /// Get the total number of elements with overflow checking
     pub fn checked_numel(&self) -> Result<usize> {
-        self.shape()
-            .iter()
-            .try_fold(1usize, |acc, &dim| {
-                acc.checked_mul(dim).ok_or_else(|| TensorError::SizeOverflow {
+        self.shape().iter().try_fold(1usize, |acc, &dim| {
+            acc.checked_mul(dim)
+                .ok_or_else(|| TensorError::SizeOverflow {
                     dimensions: self.shape().to_vec(),
                 })
-            })
+        })
     }
 
     /// Alternative name for numel (more Rust-idiomatic)
@@ -178,21 +183,16 @@ impl Tensor {
     }
 }
 
-impl TensorData {
-    /// Get the shape of the underlying array
-    pub fn shape(&self) -> &[usize] {
-        match self {
-            TensorData::Float32(arr) => arr.shape(),
-            TensorData::Float64(arr) => arr.shape(),
-            TensorData::Int32(arr) => arr.shape(),
-            TensorData::Int64(arr) => arr.shape(),
-        }
-    }
-}
+
 
 impl fmt::Display for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Tensor(shape={:?}, dtype={:?})", self.shape(), self.dtype())
+        write!(
+            f,
+            "Tensor(shape={:?}, dtype={:?})",
+            self.shape(),
+            self.dtype()
+        )
     }
 }
 

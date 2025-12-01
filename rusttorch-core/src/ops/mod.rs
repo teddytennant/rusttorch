@@ -9,20 +9,20 @@
 //! - Optimizer update rules (SGD, Adam, etc.)
 //! - Broadcasting utilities for automatic shape expansion
 
-pub mod elementwise;
-pub mod reduction;
 pub mod activation;
-pub mod matrix;
-pub mod loss;
-pub mod optimizer;
 pub mod broadcast;
+pub mod elementwise;
+pub mod loss;
+pub mod matrix;
+pub mod optimizer;
+pub mod reduction;
 pub mod simd;
 
-pub use elementwise::*;
-pub use reduction::*;
 pub use activation::*;
-pub use matrix::*;
-pub use loss::*;
-pub use optimizer::*;
 pub use broadcast::*;
+pub use elementwise::*;
+pub use loss::*;
+pub use matrix::*;
+pub use optimizer::*;
+pub use reduction::*;
 pub use simd::*;

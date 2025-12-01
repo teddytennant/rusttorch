@@ -1,7 +1,7 @@
 //! Memory management utilities
 
 /// Allocate aligned memory for tensors
-pub fn allocate_aligned(size: usize, alignment: usize) -> Vec<u8> {
+pub fn allocate_aligned(size: usize, _alignment: usize) -> Vec<u8> {
     // TODO: Implement proper aligned allocation
     vec![0; size]
 }

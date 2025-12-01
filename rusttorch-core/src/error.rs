@@ -23,9 +23,7 @@ pub enum TensorError {
     },
 
     /// Operation on empty tensor that requires non-empty data
-    EmptyTensor {
-        operation: String,
-    },
+    EmptyTensor { operation: String },
 
     /// Invalid dimension index or size
     InvalidDimension {
@@ -42,15 +40,10 @@ pub enum TensorError {
     },
 
     /// Tensor size overflow (too many elements)
-    SizeOverflow {
-        dimensions: Vec<usize>,
-    },
+    SizeOverflow { dimensions: Vec<usize> },
 
     /// Invalid argument or parameter
-    InvalidArgument {
-        parameter: String,
-        reason: String,
-    },
+    InvalidArgument { parameter: String, reason: String },
 
     /// Data validation error (e.g., predictions not in [0,1])
     ValidationError {
@@ -60,9 +53,7 @@ pub enum TensorError {
     },
 
     /// I/O error when loading data
-    IoError {
-        message: String,
-    },
+    IoError { message: String },
 
     /// Parse error when loading data
     ParseError {
@@ -72,22 +63,28 @@ pub enum TensorError {
     },
 
     /// Generic error for cases not covered above
-    Other {
-        message: String,
-    },
+    Other { message: String },
 }
 
 impl fmt::Display for TensorError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TensorError::ShapeMismatch { expected, actual, context } => {
+            TensorError::ShapeMismatch {
+                expected,
+                actual,
+                context,
+            } => {
                 write!(
                     f,
                     "Shape mismatch in {}: expected {:?}, got {:?}",
                     context, expected, actual
                 )
             }
-            TensorError::DTypeMismatch { expected, actual, context } => {
+            TensorError::DTypeMismatch {
+                expected,
+                actual,
+                context,
+            } => {
                 write!(
                     f,
                     "Data type mismatch in {}: expected {}, got {}",
@@ -97,14 +94,22 @@ impl fmt::Display for TensorError {
             TensorError::EmptyTensor { operation } => {
                 write!(f, "Cannot perform {} on empty tensor", operation)
             }
-            TensorError::InvalidDimension { dimension, max_dimension, context } => {
+            TensorError::InvalidDimension {
+                dimension,
+                max_dimension,
+                context,
+            } => {
                 write!(
                     f,
                     "Invalid dimension in {}: {} (max: {})",
                     context, dimension, max_dimension
                 )
             }
-            TensorError::BroadcastError { shape_a, shape_b, reason } => {
+            TensorError::BroadcastError {
+                shape_a,
+                shape_b,
+                reason,
+            } => {
                 write!(
                     f,
                     "Cannot broadcast shapes {:?} and {:?}: {}",
@@ -121,7 +126,11 @@ impl fmt::Display for TensorError {
             TensorError::InvalidArgument { parameter, reason } => {
                 write!(f, "Invalid argument '{}': {}", parameter, reason)
             }
-            TensorError::ValidationError { field, constraint, actual } => {
+            TensorError::ValidationError {
+                field,
+                constraint,
+                actual,
+            } => {
                 write!(
                     f,
                     "Validation error for '{}': expected {}, got {}",
@@ -131,8 +140,16 @@ impl fmt::Display for TensorError {
             TensorError::IoError { message } => {
                 write!(f, "I/O error: {}", message)
             }
-            TensorError::ParseError { line, column, message } => {
-                write!(f, "Parse error at line {}, column {}: {}", line, column, message)
+            TensorError::ParseError {
+                line,
+                column,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Parse error at line {}, column {}: {}",
+                    line, column, message
+                )
             }
             TensorError::Other { message } => {
                 write!(f, "{}", message)
