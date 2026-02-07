@@ -3,6 +3,8 @@
 ![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=for-the-badge&logo=PyTorch&logoColor=white)
 
+⚠️ **EXPERIMENTAL PROJECT** - This is an experimental fork of PyTorch with major components rewritten in Rust. It is **not intended for real-world use** and should be treated as a research/exploration project only.
+
 **RustTorch** is a PyTorch extension that provides high-performance implementations of common operations in Rust. Install it alongside PyTorch to accelerate CPU-bound operations while maintaining full compatibility with the PyTorch ecosystem.
 
 ## Project Goals
