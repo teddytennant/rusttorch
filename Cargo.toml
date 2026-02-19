@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2021"
 authors = ["RustTorch Contributors"]
 license = "BSD-3-Clause"
-repository = "https://github.com/pytorch/pytorch"
-homepage = "https://pytorch.org"
+repository = "https://github.com/teddytennant/rusttorch"
+homepage = "https://github.com/teddytennant/rusttorch"
 
 [workspace.dependencies]
 # Core dependencies
