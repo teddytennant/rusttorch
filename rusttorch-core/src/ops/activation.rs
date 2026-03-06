@@ -1,6 +1,6 @@
 //! Activation functions for neural networks
 
-use crate::tensor::{Tensor, TensorData, DType};
+use crate::tensor::{Tensor, TensorData};
 use crate::error::{Result, TensorError};
 use std::f32::consts::PI;
 
@@ -369,6 +369,7 @@ pub fn softsign(tensor: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DType;
 
     #[test]
     fn test_relu() {

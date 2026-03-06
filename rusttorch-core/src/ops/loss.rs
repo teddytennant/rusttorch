@@ -9,7 +9,7 @@
 //! All functions return `Result<f64, TensorError>` for proper error handling.
 
 use crate::error::{Result, TensorError};
-use crate::tensor::{Tensor, TensorData, DType};
+use crate::tensor::{Tensor, TensorData};
 
 /// Mean Squared Error loss
 ///
@@ -383,6 +383,7 @@ pub fn cross_entropy_loss(predictions: &Tensor, targets: &Tensor, epsilon: f64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DType;
 
     #[test]
     fn test_mse_loss() {

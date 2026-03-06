@@ -21,8 +21,6 @@ pub use tensor::{DType, Tensor, TensorView};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_library_loads() {
         // Basic smoke test to ensure library compiles
