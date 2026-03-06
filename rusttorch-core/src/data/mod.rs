@@ -82,7 +82,7 @@ pub fn load_csv<P: AsRef<Path>>(
 /// # Returns
 /// (Normalized tensor, mean, std)
 pub fn normalize(tensor: &Tensor) -> (Tensor, f64, f64) {
-    let mean = crate::ops::mean(tensor);
+    let mean = crate::ops::mean(tensor).expect("normalize requires non-empty tensor");
     let std = compute_std(tensor, mean);
 
     let normalized = match tensor.data() {
