@@ -4,15 +4,28 @@
 //! Currently uses auto-vectorization with iterator patterns optimized for LLVM.
 //! Future work: Explicit SIMD using std::simd (unstable) or packed_simd.
 
+use crate::error::{Result, TensorError};
 use crate::tensor::{Tensor, TensorData};
 use rayon::prelude::*;
 
 /// SIMD-optimized element-wise addition
 ///
 /// Uses auto-vectorization for small-medium tensors and parallel SIMD for large tensors.
-pub fn add_simd(a: &Tensor, b: &Tensor) -> Tensor {
-    assert_eq!(a.dtype(), b.dtype(), "Tensors must have the same dtype");
-    assert_eq!(a.shape(), b.shape(), "Tensors must have the same shape");
+pub fn add_simd(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    if a.dtype() != b.dtype() {
+        return Err(TensorError::DTypeMismatch {
+            expected: format!("{:?}", a.dtype()),
+            actual: format!("{:?}", b.dtype()),
+            context: "add_simd".to_string(),
+        });
+    }
+    if a.shape() != b.shape() {
+        return Err(TensorError::ShapeMismatch {
+            expected: a.shape().to_vec(),
+            actual: b.shape().to_vec(),
+            context: "add_simd".to_string(),
+        });
+    }
 
     let dtype = a.dtype();
     let numel = a.numel();
@@ -72,16 +85,28 @@ pub fn add_simd(a: &Tensor, b: &Tensor) -> Tensor {
         }
         (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a + arr_b),
         (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a + arr_b),
-        _ => panic!("Mismatched tensor data types"),
+        _ => unreachable!("dtype mismatch already checked"),
     };
 
-    Tensor::from_data(data, dtype)
+    Ok(Tensor::from_data(data, dtype))
 }
 
 /// SIMD-optimized element-wise multiplication
-pub fn mul_simd(a: &Tensor, b: &Tensor) -> Tensor {
-    assert_eq!(a.dtype(), b.dtype(), "Tensors must have the same dtype");
-    assert_eq!(a.shape(), b.shape(), "Tensors must have the same shape");
+pub fn mul_simd(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    if a.dtype() != b.dtype() {
+        return Err(TensorError::DTypeMismatch {
+            expected: format!("{:?}", a.dtype()),
+            actual: format!("{:?}", b.dtype()),
+            context: "mul_simd".to_string(),
+        });
+    }
+    if a.shape() != b.shape() {
+        return Err(TensorError::ShapeMismatch {
+            expected: a.shape().to_vec(),
+            actual: b.shape().to_vec(),
+            context: "mul_simd".to_string(),
+        });
+    }
 
     let dtype = a.dtype();
     let numel = a.numel();
@@ -139,10 +164,10 @@ pub fn mul_simd(a: &Tensor, b: &Tensor) -> Tensor {
         }
         (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a * arr_b),
         (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a * arr_b),
-        _ => panic!("Mismatched tensor data types"),
+        _ => unreachable!("dtype mismatch already checked"),
     };
 
-    Tensor::from_data(data, dtype)
+    Ok(Tensor::from_data(data, dtype))
 }
 
 /// SIMD-optimized ReLU activation
@@ -247,11 +272,21 @@ pub fn mul_scalar_simd(tensor: &Tensor, scalar: f32) -> Tensor {
 /// Fused multiply-add: a * b + c (SIMD optimized)
 ///
 /// More efficient than separate mul and add operations
-pub fn fused_multiply_add(a: &Tensor, b: &Tensor, c: &Tensor) -> Tensor {
-    assert_eq!(a.shape(), b.shape());
-    assert_eq!(a.shape(), c.shape());
-    assert_eq!(a.dtype(), b.dtype());
-    assert_eq!(a.dtype(), c.dtype());
+pub fn fused_multiply_add(a: &Tensor, b: &Tensor, c: &Tensor) -> Result<Tensor> {
+    if a.shape() != b.shape() || a.shape() != c.shape() {
+        return Err(TensorError::ShapeMismatch {
+            expected: a.shape().to_vec(),
+            actual: if a.shape() != b.shape() { b.shape().to_vec() } else { c.shape().to_vec() },
+            context: "fused_multiply_add".to_string(),
+        });
+    }
+    if a.dtype() != b.dtype() || a.dtype() != c.dtype() {
+        return Err(TensorError::DTypeMismatch {
+            expected: format!("{:?}", a.dtype()),
+            actual: if a.dtype() != b.dtype() { format!("{:?}", b.dtype()) } else { format!("{:?}", c.dtype()) },
+            context: "fused_multiply_add".to_string(),
+        });
+    }
 
     let dtype = a.dtype();
     let numel = a.numel();
@@ -315,10 +350,15 @@ pub fn fused_multiply_add(a: &Tensor, b: &Tensor, c: &Tensor) -> Tensor {
                 TensorData::Float64(arr_a * arr_b + arr_c)
             }
         }
-        _ => panic!("FMA only supports floating-point tensors"),
+        _ => {
+            return Err(TensorError::InvalidArgument {
+                parameter: "dtype".to_string(),
+                reason: "fused_multiply_add only supports floating-point tensors".to_string(),
+            })
+        }
     };
 
-    Tensor::from_data(data, dtype)
+    Ok(Tensor::from_data(data, dtype))
 }
 
 #[cfg(test)]
@@ -330,7 +370,7 @@ mod tests {
     fn test_add_simd() {
         let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]);
         let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], &[4]);
-        let c = add_simd(&a, &b);
+        let c = add_simd(&a, &b).unwrap();
         assert_eq!(c.shape(), &[4]);
     }
 
@@ -338,7 +378,7 @@ mod tests {
     fn test_mul_simd() {
         let a = Tensor::from_vec(vec![2.0, 3.0, 4.0, 5.0], &[4]);
         let b = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]);
-        let c = mul_simd(&a, &b);
+        let c = mul_simd(&a, &b).unwrap();
         assert_eq!(c.shape(), &[4]);
     }
 
@@ -361,7 +401,7 @@ mod tests {
         let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
         let b = Tensor::from_vec(vec![2.0, 3.0, 4.0], &[3]);
         let c = Tensor::from_vec(vec![1.0, 1.0, 1.0], &[3]);
-        let result = fused_multiply_add(&a, &b, &c);
+        let result = fused_multiply_add(&a, &b, &c).unwrap();
         // Expected: [1*2+1, 2*3+1, 3*4+1] = [3, 7, 13]
         assert_eq!(result.shape(), &[3]);
     }
@@ -372,7 +412,36 @@ mod tests {
         let size = 100_000;
         let a = Tensor::ones(&[size], DType::Float32);
         let b = Tensor::ones(&[size], DType::Float32);
-        let c = add_simd(&a, &b);
+        let c = add_simd(&a, &b).unwrap();
         assert_eq!(c.numel(), size);
+    }
+
+    #[test]
+    fn test_add_simd_shape_mismatch() {
+        let a = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        let b = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+        assert!(add_simd(&a, &b).is_err());
+    }
+
+    #[test]
+    fn test_add_simd_dtype_mismatch() {
+        let a = Tensor::ones(&[4], DType::Float32);
+        let b = Tensor::ones(&[4], DType::Float64);
+        assert!(add_simd(&a, &b).is_err());
+    }
+
+    #[test]
+    fn test_mul_simd_shape_mismatch() {
+        let a = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        let b = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+        assert!(mul_simd(&a, &b).is_err());
+    }
+
+    #[test]
+    fn test_fma_shape_mismatch() {
+        let a = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        let b = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+        let c = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        assert!(fused_multiply_add(&a, &b, &c).is_err());
     }
 }
