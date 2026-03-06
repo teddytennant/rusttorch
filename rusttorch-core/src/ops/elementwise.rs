@@ -87,7 +87,7 @@ pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor> {
                 TensorData::Int64(arr_a + arr_b)
             }
         }
-        _ => panic!("Mismatched tensor data types"),
+        _ => unreachable!("dtype mismatch already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -120,7 +120,7 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         }
         (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a * arr_b),
         (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a * arr_b),
-        _ => panic!("Mismatched tensor data types"),
+        _ => unreachable!("dtype mismatch already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -153,7 +153,7 @@ pub fn sub(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         }
         (TensorData::Int32(arr_a), TensorData::Int32(arr_b)) => TensorData::Int32(arr_a - arr_b),
         (TensorData::Int64(arr_a), TensorData::Int64(arr_b)) => TensorData::Int64(arr_a - arr_b),
-        _ => panic!("Mismatched tensor data types"),
+        _ => unreachable!("dtype mismatch already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -190,7 +190,7 @@ pub fn div(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         (TensorData::Float64(arr_a), TensorData::Float64(arr_b)) => {
             TensorData::Float64(arr_a / arr_b)
         }
-        _ => panic!("Division only supported for floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
