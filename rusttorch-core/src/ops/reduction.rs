@@ -14,46 +14,61 @@ pub fn sum(tensor: &Tensor) -> f64 {
 }
 
 /// Compute the mean of all elements
-pub fn mean(tensor: &Tensor) -> f64 {
+pub fn mean(tensor: &Tensor) -> Result<f64> {
+    let n = tensor.numel();
+    if n == 0 {
+        return Err(TensorError::EmptyTensor {
+            operation: "mean".to_string(),
+        });
+    }
     let total = sum(tensor);
-    let count = tensor.numel() as f64;
-    total / count
+    Ok(total / n as f64)
 }
 
 /// Find the maximum element
-pub fn max(tensor: &Tensor) -> f64 {
-    match tensor.data() {
+pub fn max(tensor: &Tensor) -> Result<f64> {
+    if tensor.numel() == 0 {
+        return Err(TensorError::EmptyTensor {
+            operation: "max".to_string(),
+        });
+    }
+    Ok(match tensor.data() {
         TensorData::Float32(arr) => arr
             .iter()
             .copied()
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f32::NEG_INFINITY) as f64,
+            .unwrap() as f64,
         TensorData::Float64(arr) => arr
             .iter()
             .copied()
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f64::NEG_INFINITY),
-        TensorData::Int32(arr) => arr.iter().copied().max().unwrap_or(i32::MIN) as f64,
-        TensorData::Int64(arr) => arr.iter().copied().max().unwrap_or(i64::MIN) as f64,
-    }
+            .unwrap(),
+        TensorData::Int32(arr) => arr.iter().copied().max().unwrap() as f64,
+        TensorData::Int64(arr) => arr.iter().copied().max().unwrap() as f64,
+    })
 }
 
 /// Find the minimum element
-pub fn min(tensor: &Tensor) -> f64 {
-    match tensor.data() {
+pub fn min(tensor: &Tensor) -> Result<f64> {
+    if tensor.numel() == 0 {
+        return Err(TensorError::EmptyTensor {
+            operation: "min".to_string(),
+        });
+    }
+    Ok(match tensor.data() {
         TensorData::Float32(arr) => arr
             .iter()
             .copied()
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f32::INFINITY) as f64,
+            .unwrap() as f64,
         TensorData::Float64(arr) => arr
             .iter()
             .copied()
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f64::INFINITY),
-        TensorData::Int32(arr) => arr.iter().copied().min().unwrap_or(i32::MAX) as f64,
-        TensorData::Int64(arr) => arr.iter().copied().min().unwrap_or(i64::MAX) as f64,
-    }
+            .unwrap(),
+        TensorData::Int32(arr) => arr.iter().copied().min().unwrap() as f64,
+        TensorData::Int64(arr) => arr.iter().copied().min().unwrap() as f64,
+    })
 }
 
 /// Sum along a specific dimension
@@ -136,21 +151,21 @@ mod tests {
     #[test]
     fn test_mean() {
         let t = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let m = mean(&t);
+        let m = mean(&t).unwrap();
         assert_eq!(m, 2.5);
     }
 
     #[test]
     fn test_max() {
         let t = Tensor::from_vec(vec![1.0, 5.0, 3.0, 2.0], &[2, 2]);
-        let m = max(&t);
+        let m = max(&t).unwrap();
         assert_eq!(m, 5.0);
     }
 
     #[test]
     fn test_min() {
         let t = Tensor::from_vec(vec![3.0, 1.0, 5.0, 2.0], &[2, 2]);
-        let m = min(&t);
+        let m = min(&t).unwrap();
         assert_eq!(m, 1.0);
     }
 
@@ -166,6 +181,46 @@ mod tests {
         let t = Tensor::from_vec(vec![2.0, 4.0, 6.0, 8.0], &[2, 2]);
         let m = mean_dim(&t, 1).unwrap();
         assert_eq!(m.shape(), &[2]);
+    }
+
+    #[test]
+    fn test_mean_empty_tensor() {
+        let t = Tensor::from_vec(vec![], &[0]);
+        let result = mean(&t);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TensorError::EmptyTensor { .. } => {}
+            _ => panic!("Expected EmptyTensor error"),
+        }
+    }
+
+    #[test]
+    fn test_sum_empty_tensor() {
+        let t = Tensor::from_vec(vec![], &[0]);
+        let s = sum(&t);
+        assert_eq!(s, 0.0);
+    }
+
+    #[test]
+    fn test_max_empty_tensor() {
+        let t = Tensor::from_vec(vec![], &[0]);
+        let result = max(&t);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TensorError::EmptyTensor { .. } => {}
+            _ => panic!("Expected EmptyTensor error"),
+        }
+    }
+
+    #[test]
+    fn test_min_empty_tensor() {
+        let t = Tensor::from_vec(vec![], &[0]);
+        let result = min(&t);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TensorError::EmptyTensor { .. } => {}
+            _ => panic!("Expected EmptyTensor error"),
+        }
     }
 
     #[test]
