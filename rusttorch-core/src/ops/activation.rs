@@ -30,7 +30,7 @@ pub fn sigmoid(tensor: &Tensor) -> Result<Tensor> {
     let data = match tensor.data() {
         TensorData::Float32(arr) => TensorData::Float32(arr.mapv(|x| 1.0 / (1.0 + (-x).exp()))),
         TensorData::Float64(arr) => TensorData::Float64(arr.mapv(|x| 1.0 / (1.0 + (-x).exp()))),
-        _ => panic!("Sigmoid only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -49,7 +49,7 @@ pub fn tanh(tensor: &Tensor) -> Result<Tensor> {
     let data = match tensor.data() {
         TensorData::Float32(arr) => TensorData::Float32(arr.mapv(|x| x.tanh())),
         TensorData::Float64(arr) => TensorData::Float64(arr.mapv(|x| x.tanh())),
-        _ => panic!("Tanh only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -81,7 +81,7 @@ pub fn gelu(tensor: &Tensor) -> Result<Tensor> {
                     0.5 * x * (1.0 + (sqrt_2_over_pi * (x + 0.044715 * x.powi(3))).tanh())
                 }))
             }
-            _ => panic!("GELU only supports floating-point types"),
+            _ => unreachable!("non-float dtype already checked"),
         };
 
     Ok(Tensor::from_data(data, dtype))
@@ -160,7 +160,7 @@ pub fn softmax(tensor: &Tensor, dim: usize) -> Result<Tensor> {
 
             TensorData::Float64(exp_arr)
         }
-        _ => panic!("Softmax only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -215,7 +215,7 @@ pub fn elu(tensor: &Tensor, alpha: f32) -> Result<Tensor> {
             let alpha = alpha as f64;
             TensorData::Float64(arr.mapv(|x| if x > 0.0 { x } else { alpha * (x.exp() - 1.0) }))
         }
-        _ => panic!("ELU only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -252,7 +252,7 @@ pub fn selu(tensor: &Tensor) -> Result<Tensor> {
         TensorData::Float64(arr) => TensorData::Float64(
             arr.mapv(|x| scale * if x > 0.0 { x } else { alpha * (x.exp() - 1.0) }),
         ),
-        _ => panic!("SELU only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -272,7 +272,7 @@ pub fn swish(tensor: &Tensor) -> Result<Tensor> {
     let data = match tensor.data() {
         TensorData::Float32(arr) => TensorData::Float32(arr.mapv(|x| x / (1.0 + (-x).exp()))),
         TensorData::Float64(arr) => TensorData::Float64(arr.mapv(|x| x / (1.0 + (-x).exp()))),
-        _ => panic!("Swish only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -307,7 +307,7 @@ pub fn mish(tensor: &Tensor) -> Result<Tensor> {
             let softplus = if x > 20.0 { x } else { (1.0 + x.exp()).ln() };
             x * softplus.tanh()
         })),
-        _ => panic!("Mish only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -339,7 +339,7 @@ pub fn softplus(tensor: &Tensor) -> Result<Tensor> {
         TensorData::Float64(arr) => {
             TensorData::Float64(arr.mapv(|x| if x > 20.0 { x } else { (1.0 + x.exp()).ln() }))
         }
-        _ => panic!("Softplus only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
@@ -360,7 +360,7 @@ pub fn softsign(tensor: &Tensor) -> Result<Tensor> {
     let data = match tensor.data() {
         TensorData::Float32(arr) => TensorData::Float32(arr.mapv(|x| x / (1.0 + x.abs()))),
         TensorData::Float64(arr) => TensorData::Float64(arr.mapv(|x| x / (1.0 + x.abs()))),
-        _ => panic!("Softsign only supports floating-point types"),
+        _ => unreachable!("non-float dtype already checked"),
     };
 
     Ok(Tensor::from_data(data, dtype))
