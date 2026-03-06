@@ -4,7 +4,7 @@
 //! Currently uses auto-vectorization with iterator patterns optimized for LLVM.
 //! Future work: Explicit SIMD using std::simd (unstable) or packed_simd.
 
-use crate::tensor::{Tensor, TensorData, DType};
+use crate::tensor::{Tensor, TensorData};
 use rayon::prelude::*;
 
 /// SIMD-optimized element-wise addition
@@ -324,6 +324,7 @@ pub fn fused_multiply_add(a: &Tensor, b: &Tensor, c: &Tensor) -> Tensor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DType;
 
     #[test]
     fn test_add_simd() {

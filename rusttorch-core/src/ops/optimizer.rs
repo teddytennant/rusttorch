@@ -9,7 +9,7 @@
 //! All functions return `Result` types for proper error handling.
 
 use crate::error::{Result, TensorError};
-use crate::tensor::{Tensor, TensorData, DType};
+use crate::tensor::{Tensor, TensorData};
 
 /// SGD (Stochastic Gradient Descent) parameter update
 ///
@@ -465,6 +465,7 @@ fn as_float64(data: &TensorData) -> Result<&ndarray::Array<f64, ndarray::IxDyn>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DType;
 
     #[test]
     fn test_sgd_update() {

@@ -9,7 +9,7 @@
 //! 3. The result shape is the maximum along each dimension
 
 use crate::error::{Result, TensorError};
-use crate::tensor::{Tensor, TensorData, DType};
+use crate::tensor::{Tensor, TensorData};
 use ndarray::{Array, IxDyn};
 
 /// Check if two shapes are broadcastable
@@ -200,6 +200,7 @@ pub fn div_broadcast(a: &Tensor, b: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DType;
 
     #[test]
     fn test_shapes_broadcastable() {
