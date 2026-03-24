@@ -1,7 +1,7 @@
 //! Reduction operations (sum, mean, max, min)
 
-use crate::tensor::{Tensor, TensorData, DType};
 use crate::error::{Result, TensorError};
+use crate::tensor::{DType, Tensor, TensorData};
 
 /// Sum all elements in a tensor
 pub fn sum(tensor: &Tensor) -> f64 {
@@ -84,11 +84,17 @@ pub fn sum_dim(tensor: &Tensor, dim: usize) -> Result<Tensor> {
     match tensor.data() {
         TensorData::Float32(arr) => {
             let result = arr.sum_axis(ndarray::Axis(dim));
-            Ok(Tensor::from_data(TensorData::Float32(result), DType::Float32))
+            Ok(Tensor::from_data(
+                TensorData::Float32(result),
+                DType::Float32,
+            ))
         }
         TensorData::Float64(arr) => {
             let result = arr.sum_axis(ndarray::Axis(dim));
-            Ok(Tensor::from_data(TensorData::Float64(result), DType::Float64))
+            Ok(Tensor::from_data(
+                TensorData::Float64(result),
+                DType::Float64,
+            ))
         }
         TensorData::Int32(arr) => {
             let result = arr.sum_axis(ndarray::Axis(dim));
@@ -114,11 +120,17 @@ pub fn mean_dim(tensor: &Tensor, dim: usize) -> Result<Tensor> {
     match tensor.data() {
         TensorData::Float32(arr) => {
             let result = arr.mean_axis(ndarray::Axis(dim)).unwrap();
-            Ok(Tensor::from_data(TensorData::Float32(result), DType::Float32))
+            Ok(Tensor::from_data(
+                TensorData::Float32(result),
+                DType::Float32,
+            ))
         }
         TensorData::Float64(arr) => {
             let result = arr.mean_axis(ndarray::Axis(dim)).unwrap();
-            Ok(Tensor::from_data(TensorData::Float64(result), DType::Float64))
+            Ok(Tensor::from_data(
+                TensorData::Float64(result),
+                DType::Float64,
+            ))
         }
         TensorData::Int32(arr) => {
             // For integers, compute sum then divide

@@ -1,7 +1,7 @@
 //! Activation functions for neural networks
 
-use crate::tensor::{Tensor, TensorData};
 use crate::error::{Result, TensorError};
+use crate::tensor::{Tensor, TensorData};
 use std::f32::consts::PI;
 
 /// ReLU activation: max(0, x)

@@ -3,6 +3,7 @@
 //! High-performance tensor operations and neural network primitives written in Rust.
 //! Designed to be a drop-in replacement for performance-critical PyTorch CPU operations.
 
+pub mod autograd;
 pub mod data;
 pub mod error;
 pub mod memory;

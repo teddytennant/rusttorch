@@ -1,7 +1,7 @@
 //! Element-wise tensor operations
 
-use crate::tensor::{Tensor, TensorData};
 use crate::error::{Result, TensorError};
+use crate::tensor::{Tensor, TensorData};
 use rayon::prelude::*;
 
 /// Threshold for using parallel operations (number of elements)

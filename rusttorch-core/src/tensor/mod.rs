@@ -181,9 +181,69 @@ impl Tensor {
             dtype,
         }
     }
+
+    /// Create a tensor of ones with the same shape and dtype
+    pub fn ones_like(&self) -> Self {
+        Tensor::ones(self.shape(), self.dtype())
+    }
+
+    /// Create a tensor of zeros with the same shape and dtype
+    pub fn zeros_like(&self) -> Self {
+        Tensor::zeros(self.shape(), self.dtype())
+    }
+
+    /// Element-wise negation
+    pub fn neg(&self) -> Self {
+        let dtype = self.dtype();
+        let data = match self.data() {
+            TensorData::Float32(arr) => TensorData::Float32(arr.mapv(|x| -x)),
+            TensorData::Float64(arr) => TensorData::Float64(arr.mapv(|x| -x)),
+            TensorData::Int32(arr) => TensorData::Int32(arr.mapv(|x| -x)),
+            TensorData::Int64(arr) => TensorData::Int64(arr.mapv(|x| -x)),
+        };
+        Tensor::from_data(data, dtype)
+    }
+
+    /// Get a copy of the data as a flat Vec<f32> (converts if needed)
+    pub fn to_vec_f32(&self) -> Vec<f32> {
+        match self.data() {
+            TensorData::Float32(arr) => arr.iter().copied().collect(),
+            TensorData::Float64(arr) => arr.iter().map(|&x| x as f32).collect(),
+            TensorData::Int32(arr) => arr.iter().map(|&x| x as f32).collect(),
+            TensorData::Int64(arr) => arr.iter().map(|&x| x as f32).collect(),
+        }
+    }
+
+    /// Create a scalar (0-dimensional) tensor from a single f32 value
+    pub fn scalar(value: f32) -> Self {
+        Tensor::from_vec(vec![value], &[1])
+    }
+
+    /// Get the scalar value from a 1-element tensor
+    pub fn item(&self) -> Result<f64> {
+        if self.numel() != 1 {
+            return Err(TensorError::InvalidArgument {
+                parameter: "tensor".to_string(),
+                reason: format!(
+                    "item() requires a single-element tensor, got {} elements",
+                    self.numel()
+                ),
+            });
+        }
+        Ok(match self.data() {
+            TensorData::Float32(arr) => arr.iter().next().copied().unwrap() as f64,
+            TensorData::Float64(arr) => arr.iter().next().copied().unwrap(),
+            TensorData::Int32(arr) => arr.iter().next().copied().unwrap() as f64,
+            TensorData::Int64(arr) => arr.iter().next().copied().unwrap() as f64,
+        })
+    }
+
+    /// Create a filled tensor with a specific f32 value
+    pub fn full(shape: &[usize], value: f32) -> Self {
+        let data = Array::from_elem(IxDyn(shape), value);
+        Tensor::from_data(TensorData::Float32(data), DType::Float32)
+    }
 }
-
-
 
 impl fmt::Display for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

@@ -3,10 +3,15 @@
 //! PyO3-based Python bindings for the RustTorch library.
 //! Provides a PyTorch-like API for high-performance tensor operations.
 
+use numpy::PyReadonlyArrayDyn;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use numpy::{PyArray1, PyReadonlyArray2, PyReadonlyArrayDyn};
-use rusttorch_core::{Tensor as RustTensor, DType};
+use rusttorch_core::{DType, Tensor as RustTensor};
+
+/// Helper to convert TensorError to PyValueError
+fn tensor_err(e: impl std::fmt::Display) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(format!("{}", e))
+}
 
 /// Python wrapper for Rust Tensor
 #[pyclass(name = "Tensor")]
@@ -16,29 +21,27 @@ struct PyTensor {
 
 #[pymethods]
 impl PyTensor {
-    /// Create a new tensor filled with zeros
     #[staticmethod]
-    fn zeros(py: Python, shape: &PyList) -> PyResult<Self> {
+    fn zeros(_py: Python, shape: &PyList) -> PyResult<Self> {
         let shape_vec: Vec<usize> = shape.extract()?;
         Ok(PyTensor {
             inner: RustTensor::zeros(&shape_vec, DType::Float32),
         })
     }
 
-    /// Create a new tensor filled with ones
     #[staticmethod]
-    fn ones(py: Python, shape: &PyList) -> PyResult<Self> {
+    fn ones(_py: Python, shape: &PyList) -> PyResult<Self> {
         let shape_vec: Vec<usize> = shape.extract()?;
         Ok(PyTensor {
             inner: RustTensor::ones(&shape_vec, DType::Float32),
         })
     }
 
-    /// Create tensor from NumPy array (2D float32)
     #[staticmethod]
-    fn from_numpy(py: Python, array: PyReadonlyArrayDyn<f32>) -> PyResult<Self> {
+    fn from_numpy(_py: Python, array: PyReadonlyArrayDyn<f32>) -> PyResult<Self> {
         let shape: Vec<usize> = array.shape().to_vec();
-        let data: Vec<f32> = array.as_slice()
+        let data: Vec<f32> = array
+            .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("Array must be contiguous"))?
             .to_vec();
         Ok(PyTensor {
@@ -46,44 +49,69 @@ impl PyTensor {
         })
     }
 
-    /// Get the shape of the tensor
     fn shape(&self) -> Vec<usize> {
         self.inner.shape().to_vec()
     }
-
-    /// Get the number of dimensions
     fn ndim(&self) -> usize {
         self.inner.ndim()
     }
-
-    /// Get the total number of elements
     fn numel(&self) -> usize {
         self.inner.numel()
     }
 
-    /// String representation
     fn __repr__(&self) -> String {
-        format!("Tensor(shape={:?}, dtype={})", self.inner.shape(), self.inner.dtype())
+        format!(
+            "Tensor(shape={:?}, dtype={})",
+            self.inner.shape(),
+            self.inner.dtype()
+        )
     }
 }
 
-/// Add two tensors element-wise
+// Element-wise operations (all now return Result)
 #[pyfunction]
-fn add(a: &PyTensor, b: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::add(&a.inner, &b.inner),
-    }
+fn add(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::add(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Multiply two tensors element-wise
 #[pyfunction]
-fn mul(a: &PyTensor, b: &PyTensor) -> PyTensor {
+fn mul(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::mul(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn sub(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::sub(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn div(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::div(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn add_scalar(tensor: &PyTensor, scalar: f32) -> PyTensor {
     PyTensor {
-        inner: rusttorch_core::ops::mul(&a.inner, &b.inner),
+        inner: rusttorch_core::ops::add_scalar(&tensor.inner, scalar),
     }
 }
 
-/// ReLU activation function
+#[pyfunction]
+fn mul_scalar(tensor: &PyTensor, scalar: f32) -> PyTensor {
+    PyTensor {
+        inner: rusttorch_core::ops::mul_scalar(&tensor.inner, scalar),
+    }
+}
+
+// Activation functions (most return Result)
 #[pyfunction]
 fn relu(tensor: &PyTensor) -> PyTensor {
     PyTensor {
@@ -91,70 +119,27 @@ fn relu(tensor: &PyTensor) -> PyTensor {
     }
 }
 
-/// Matrix multiplication
 #[pyfunction]
-fn matmul(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
-    match rusttorch_core::ops::matmul(&a.inner, &b.inner) {
-        Ok(result) => Ok(PyTensor { inner: result }),
-        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
-    }
+fn sigmoid(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::sigmoid(&tensor.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Transpose a tensor
 #[pyfunction]
-fn transpose(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::transpose(&tensor.inner),
-    }
+fn tanh(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::tanh(&tensor.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Reshape a tensor
 #[pyfunction]
-fn reshape(tensor: &PyTensor, shape: &PyList) -> PyResult<PyTensor> {
-    let shape_vec: Vec<usize> = shape.extract()?;
-    match rusttorch_core::ops::reshape(&tensor.inner, &shape_vec) {
-        Ok(result) => Ok(PyTensor { inner: result }),
-        Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
-    }
+fn gelu(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::gelu(&tensor.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Sum reduction
-#[pyfunction]
-fn sum(tensor: &PyTensor) -> f64 {
-    rusttorch_core::ops::sum(&tensor.inner)
-}
-
-/// Mean reduction
-#[pyfunction]
-fn mean(tensor: &PyTensor) -> f64 {
-    rusttorch_core::ops::mean(&tensor.inner)
-}
-
-/// Sigmoid activation
-#[pyfunction]
-fn sigmoid(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::sigmoid(&tensor.inner),
-    }
-}
-
-/// Tanh activation
-#[pyfunction]
-fn tanh(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::tanh(&tensor.inner),
-    }
-}
-
-/// GELU activation
-#[pyfunction]
-fn gelu(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::gelu(&tensor.inner),
-    }
-}
-
-/// Leaky ReLU activation
 #[pyfunction]
 fn leaky_relu(tensor: &PyTensor, alpha: f32) -> PyTensor {
     PyTensor {
@@ -162,114 +147,131 @@ fn leaky_relu(tensor: &PyTensor, alpha: f32) -> PyTensor {
     }
 }
 
-/// ELU activation
 #[pyfunction]
-fn elu(tensor: &PyTensor, alpha: f32) -> PyTensor {
+fn elu(tensor: &PyTensor, alpha: f32) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::elu(&tensor.inner, alpha).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn selu(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::selu(&tensor.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn swish(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::swish(&tensor.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn mish(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::mish(&tensor.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn softplus(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::softplus(&tensor.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn softsign(tensor: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::softsign(&tensor.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn softmax(tensor: &PyTensor, dim: usize) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::softmax(&tensor.inner, dim).map_err(tensor_err)?,
+    })
+}
+
+// Matrix operations
+#[pyfunction]
+fn matmul(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::matmul(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
+}
+
+#[pyfunction]
+fn transpose(tensor: &PyTensor) -> PyTensor {
     PyTensor {
-        inner: rusttorch_core::ops::elu(&tensor.inner, alpha),
+        inner: rusttorch_core::ops::transpose(&tensor.inner),
     }
 }
 
-/// SELU activation
 #[pyfunction]
-fn selu(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::selu(&tensor.inner),
-    }
+fn reshape(tensor: &PyTensor, shape: &PyList) -> PyResult<PyTensor> {
+    let shape_vec: Vec<usize> = shape.extract()?;
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::reshape(&tensor.inner, &shape_vec).map_err(tensor_err)?,
+    })
 }
 
-/// Swish/SiLU activation
+// Reduction operations
 #[pyfunction]
-fn swish(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::swish(&tensor.inner),
-    }
+fn sum(tensor: &PyTensor) -> f64 {
+    rusttorch_core::ops::sum(&tensor.inner)
 }
 
-/// Mish activation
 #[pyfunction]
-fn mish(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::mish(&tensor.inner),
-    }
+fn mean(tensor: &PyTensor) -> PyResult<f64> {
+    rusttorch_core::ops::mean(&tensor.inner).map_err(tensor_err)
 }
 
-/// Softplus activation
-#[pyfunction]
-fn softplus(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::softplus(&tensor.inner),
-    }
-}
-
-/// Softsign activation
-#[pyfunction]
-fn softsign(tensor: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::softsign(&tensor.inner),
-    }
-}
-
-/// Softmax activation
-#[pyfunction]
-fn softmax(tensor: &PyTensor, dim: usize) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::softmax(&tensor.inner, dim),
-    }
-}
-
-// ============================================================================
-// Loss Functions
-// ============================================================================
-
-/// Mean Squared Error loss
+// Loss functions
 #[pyfunction]
 fn mse_loss(predictions: &PyTensor, targets: &PyTensor) -> PyResult<f64> {
-    rusttorch_core::ops::mse_loss(&predictions.inner, &targets.inner)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    rusttorch_core::ops::mse_loss(&predictions.inner, &targets.inner).map_err(tensor_err)
 }
 
-/// Mean Absolute Error (L1) loss
 #[pyfunction]
 fn l1_loss(predictions: &PyTensor, targets: &PyTensor) -> PyResult<f64> {
-    rusttorch_core::ops::l1_loss(&predictions.inner, &targets.inner)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    rusttorch_core::ops::l1_loss(&predictions.inner, &targets.inner).map_err(tensor_err)
 }
 
-/// Smooth L1 loss (Huber loss)
 #[pyfunction]
 fn smooth_l1_loss(predictions: &PyTensor, targets: &PyTensor, beta: f64) -> PyResult<f64> {
     rusttorch_core::ops::smooth_l1_loss(&predictions.inner, &targets.inner, beta)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+        .map_err(tensor_err)
 }
 
-/// Binary Cross-Entropy loss
 #[pyfunction]
-fn binary_cross_entropy_loss(predictions: &PyTensor, targets: &PyTensor, epsilon: f64) -> PyResult<f64> {
+fn binary_cross_entropy_loss(
+    predictions: &PyTensor,
+    targets: &PyTensor,
+    epsilon: f64,
+) -> PyResult<f64> {
     rusttorch_core::ops::binary_cross_entropy_loss(&predictions.inner, &targets.inner, epsilon)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+        .map_err(tensor_err)
 }
 
-/// Cross-Entropy loss
 #[pyfunction]
 fn cross_entropy_loss(predictions: &PyTensor, targets: &PyTensor, epsilon: f64) -> PyResult<f64> {
     rusttorch_core::ops::cross_entropy_loss(&predictions.inner, &targets.inner, epsilon)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+        .map_err(tensor_err)
 }
 
-// ============================================================================
 // Optimizers
-// ============================================================================
-
-/// SGD parameter update
 #[pyfunction]
 fn sgd_update(params: &PyTensor, gradients: &PyTensor, learning_rate: f64) -> PyResult<PyTensor> {
-    rusttorch_core::ops::sgd_update(&params.inner, &gradients.inner, learning_rate)
-        .map(|result| PyTensor { inner: result })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::sgd_update(&params.inner, &gradients.inner, learning_rate)
+            .map_err(tensor_err)?,
+    })
 }
 
-/// SGD with Momentum parameter update
 #[pyfunction]
 fn sgd_momentum_update(
     params: &PyTensor,
@@ -278,23 +280,17 @@ fn sgd_momentum_update(
     learning_rate: f64,
     momentum: f64,
 ) -> PyResult<(PyTensor, PyTensor)> {
-    rusttorch_core::ops::sgd_momentum_update(
+    let (p, v) = rusttorch_core::ops::sgd_momentum_update(
         &params.inner,
         &gradients.inner,
         &velocity.inner,
         learning_rate,
         momentum,
     )
-    .map(|(new_params, new_velocity)| {
-        (
-            PyTensor { inner: new_params },
-            PyTensor { inner: new_velocity },
-        )
-    })
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    .map_err(tensor_err)?;
+    Ok((PyTensor { inner: p }, PyTensor { inner: v }))
 }
 
-/// Adam optimizer parameter update
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn adam_update(
@@ -308,7 +304,7 @@ fn adam_update(
     epsilon: f64,
     timestep: usize,
 ) -> PyResult<(PyTensor, PyTensor, PyTensor)> {
-    rusttorch_core::ops::adam_update(
+    let (p, nm, nv) = rusttorch_core::ops::adam_update(
         &params.inner,
         &gradients.inner,
         &m.inner,
@@ -319,17 +315,14 @@ fn adam_update(
         epsilon,
         timestep,
     )
-    .map(|(new_params, new_m, new_v)| {
-        (
-            PyTensor { inner: new_params },
-            PyTensor { inner: new_m },
-            PyTensor { inner: new_v },
-        )
-    })
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    .map_err(tensor_err)?;
+    Ok((
+        PyTensor { inner: p },
+        PyTensor { inner: nm },
+        PyTensor { inner: nv },
+    ))
 }
 
-/// AdamW optimizer parameter update
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn adamw_update(
@@ -344,7 +337,7 @@ fn adamw_update(
     weight_decay: f64,
     timestep: usize,
 ) -> PyResult<(PyTensor, PyTensor, PyTensor)> {
-    rusttorch_core::ops::adamw_update(
+    let (p, nm, nv) = rusttorch_core::ops::adamw_update(
         &params.inner,
         &gradients.inner,
         &m.inner,
@@ -356,109 +349,58 @@ fn adamw_update(
         weight_decay,
         timestep,
     )
-    .map(|(new_params, new_m, new_v)| {
-        (
-            PyTensor { inner: new_params },
-            PyTensor { inner: new_m },
-            PyTensor { inner: new_v },
-        )
-    })
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    .map_err(tensor_err)?;
+    Ok((
+        PyTensor { inner: p },
+        PyTensor { inner: nm },
+        PyTensor { inner: nv },
+    ))
 }
 
-// ============================================================================
-// Additional Element-wise Operations
-// ============================================================================
-
-/// Subtract two tensors element-wise
-#[pyfunction]
-fn sub(a: &PyTensor, b: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::sub(&a.inner, &b.inner),
-    }
-}
-
-/// Divide two tensors element-wise
-#[pyfunction]
-fn div(a: &PyTensor, b: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::div(&a.inner, &b.inner),
-    }
-}
-
-/// Add scalar to tensor
-#[pyfunction]
-fn add_scalar(tensor: &PyTensor, scalar: f32) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::add_scalar(&tensor.inner, scalar),
-    }
-}
-
-/// Multiply tensor by scalar
-#[pyfunction]
-fn mul_scalar(tensor: &PyTensor, scalar: f32) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::mul_scalar(&tensor.inner, scalar),
-    }
-}
-
-// ============================================================================
-// Broadcasting Operations
-// ============================================================================
-
-/// Element-wise addition with broadcasting
+// Broadcasting operations
 #[pyfunction]
 fn add_broadcast(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
-    rusttorch_core::ops::add_broadcast(&a.inner, &b.inner)
-        .map(|result| PyTensor { inner: result })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::add_broadcast(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Element-wise multiplication with broadcasting
 #[pyfunction]
 fn mul_broadcast(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
-    rusttorch_core::ops::mul_broadcast(&a.inner, &b.inner)
-        .map(|result| PyTensor { inner: result })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::mul_broadcast(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Element-wise subtraction with broadcasting
 #[pyfunction]
 fn sub_broadcast(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
-    rusttorch_core::ops::sub_broadcast(&a.inner, &b.inner)
-        .map(|result| PyTensor { inner: result })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::sub_broadcast(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// Element-wise division with broadcasting
 #[pyfunction]
 fn div_broadcast(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
-    rusttorch_core::ops::div_broadcast(&a.inner, &b.inner)
-        .map(|result| PyTensor { inner: result })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::div_broadcast(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-// ============================================================================
-// SIMD-Optimized Operations
-// ============================================================================
-
-/// SIMD-optimized element-wise addition
+// SIMD-optimized operations (all now return Result)
 #[pyfunction]
-fn add_simd(a: &PyTensor, b: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::add_simd(&a.inner, &b.inner),
-    }
+fn add_simd(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::add_simd(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// SIMD-optimized element-wise multiplication
 #[pyfunction]
-fn mul_simd(a: &PyTensor, b: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::mul_simd(&a.inner, &b.inner),
-    }
+fn mul_simd(a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::mul_simd(&a.inner, &b.inner).map_err(tensor_err)?,
+    })
 }
 
-/// SIMD-optimized ReLU activation
 #[pyfunction]
 fn relu_simd(tensor: &PyTensor) -> PyTensor {
     PyTensor {
@@ -466,7 +408,6 @@ fn relu_simd(tensor: &PyTensor) -> PyTensor {
     }
 }
 
-/// SIMD-optimized scalar multiplication
 #[pyfunction]
 fn mul_scalar_simd(tensor: &PyTensor, scalar: f32) -> PyTensor {
     PyTensor {
@@ -474,35 +415,28 @@ fn mul_scalar_simd(tensor: &PyTensor, scalar: f32) -> PyTensor {
     }
 }
 
-/// Fused multiply-add (SIMD optimized)
 #[pyfunction]
-fn fused_multiply_add(a: &PyTensor, b: &PyTensor, c: &PyTensor) -> PyTensor {
-    PyTensor {
-        inner: rusttorch_core::ops::fused_multiply_add(&a.inner, &b.inner, &c.inner),
-    }
+fn fused_multiply_add(a: &PyTensor, b: &PyTensor, c: &PyTensor) -> PyResult<PyTensor> {
+    Ok(PyTensor {
+        inner: rusttorch_core::ops::fused_multiply_add(&a.inner, &b.inner, &c.inner)
+            .map_err(tensor_err)?,
+    })
 }
 
-// ============================================================================
-// Data Loading and Preprocessing
-// ============================================================================
-
-/// Load data from CSV file
+// Data loading and preprocessing
 #[pyfunction]
 fn load_csv(path: String, has_header: bool, delimiter: char) -> PyResult<PyTensor> {
-    match rusttorch_core::data::load_csv(path, has_header, delimiter) {
-        Ok(tensor) => Ok(PyTensor { inner: tensor }),
-        Err(e) => Err(pyo3::exceptions::PyIOError::new_err(e)),
-    }
+    Ok(PyTensor {
+        inner: rusttorch_core::data::load_csv(path, has_header, delimiter).map_err(tensor_err)?,
+    })
 }
 
-/// Normalize tensor data (z-score normalization)
 #[pyfunction]
 fn normalize(tensor: &PyTensor) -> (PyTensor, f64, f64) {
     let (normalized, mean, std) = rusttorch_core::data::normalize(&tensor.inner);
     (PyTensor { inner: normalized }, mean, std)
 }
 
-/// Create batches from dataset
 #[pyfunction]
 fn create_batches(data: &PyTensor, batch_size: usize, drop_last: bool) -> Vec<PyTensor> {
     rusttorch_core::data::create_batches(&data.inner, batch_size, drop_last)
@@ -511,13 +445,11 @@ fn create_batches(data: &PyTensor, batch_size: usize, drop_last: bool) -> Vec<Py
         .collect()
 }
 
-/// Shuffle indices for random batching
 #[pyfunction]
 fn shuffle_indices(num_samples: usize) -> Vec<usize> {
     rusttorch_core::data::shuffle_indices(num_samples)
 }
 
-/// Split data into train/validation/test sets
 #[pyfunction]
 fn train_val_test_split(
     data: &PyTensor,
@@ -534,7 +466,6 @@ fn train_val_test_split(
     )
 }
 
-/// Python module definition
 #[pymodule]
 fn rusttorch(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
@@ -603,7 +534,6 @@ fn rusttorch(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shuffle_indices, m)?)?;
     m.add_function(wrap_pyfunction!(train_val_test_split, m)?)?;
 
-    // Module metadata
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("__author__", "Theodore Tennant (@teddytennant)")?;
 
