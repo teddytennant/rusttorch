@@ -678,6 +678,444 @@ impl GradFn for TransposeBackward {
     }
 }
 
+// ---- Reshape: d(reshape(x))/dx = reshape(grad, original_shape) ----
+
+struct ReshapeBackward {
+    input: Variable,
+    original_shape: Vec<usize>,
+}
+
+impl GradFn for ReshapeBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+        let grad = crate::ops::matrix::reshape(grad_output, &self.original_shape)
+            .map_err(|e| TensorError::Other { message: e })?;
+        Ok(vec![Some(grad)])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// Reshape a variable while preserving the computation graph.
+pub fn reshape_forward(input: &Variable, new_shape: &[usize]) -> Result<Variable> {
+    let tensor = input.tensor();
+    let original_shape = tensor.shape().to_vec();
+    let result = crate::ops::matrix::reshape(&tensor, new_shape)
+        .map_err(|e| TensorError::Other { message: e })?;
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(ReshapeBackward {
+                input: input.clone(),
+                original_shape,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Conv2d: 2D convolution forward + backward ----
+// input: [B, C_in, H, W], weight: [C_out, C_in, kH, kW], bias: [C_out]
+// output: [B, C_out, oH, oW]
+
+pub struct Conv2dSavedState {
+    input: Variable,
+    weight: Variable,
+    bias: Option<Variable>,
+    input_tensor: Tensor,
+    weight_tensor: Tensor,
+    in_channels: usize,
+    out_channels: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride: usize,
+    padding: usize,
+    input_h: usize,
+    input_w: usize,
+    batch_size: usize,
+}
+
+impl GradFn for Conv2dSavedState {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let grad_data = grad_output.to_vec_f32();
+        let input_data = self.input_tensor.to_vec_f32();
+        let weight_data = self.weight_tensor.to_vec_f32();
+
+        let b = self.batch_size;
+        let c_in = self.in_channels;
+        let c_out = self.out_channels;
+        let kh = self.kernel_h;
+        let kw = self.kernel_w;
+        let stride = self.stride;
+        let pad = self.padding;
+        let ih = self.input_h;
+        let iw = self.input_w;
+        let oh = (ih + 2 * pad - kh) / stride + 1;
+        let ow = (iw + 2 * pad - kw) / stride + 1;
+
+        // grad_weight[co, ci, kh_, kw_] = sum_{b, oh_, ow_} grad[b,co,oh_,ow_] * input[b,ci,oh_*s+kh_-p,ow_*s+kw_-p]
+        let grad_weight = if self.weight.requires_grad() {
+            let mut gw = vec![0.0f32; c_out * c_in * kh * kw];
+            for bi in 0..b {
+                for co in 0..c_out {
+                    for ci in 0..c_in {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let mut sum = 0.0f32;
+                                for oy in 0..oh {
+                                    for ox in 0..ow {
+                                        let iy = oy * stride + ky;
+                                        let ix = ox * stride + kx;
+                                        let iy_orig = iy as isize - pad as isize;
+                                        let ix_orig = ix as isize - pad as isize;
+                                        let g = grad_data
+                                            [bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
+                                        if iy_orig >= 0
+                                            && iy_orig < ih as isize
+                                            && ix_orig >= 0
+                                            && ix_orig < iw as isize
+                                        {
+                                            let inp_idx = bi * c_in * ih * iw
+                                                + ci * ih * iw
+                                                + iy_orig as usize * iw
+                                                + ix_orig as usize;
+                                            sum += g * input_data[inp_idx];
+                                        }
+                                    }
+                                }
+                                gw[co * c_in * kh * kw + ci * kh * kw + ky * kw + kx] += sum;
+                            }
+                        }
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gw, &[c_out, c_in, kh, kw]))
+        } else {
+            None
+        };
+
+        // grad_input[b, ci, iy, ix] = sum_{co, ky, kx} grad[b,co,(iy+p-ky)/s,(ix+p-kx)/s] * w[co,ci,ky,kx]
+        // where (iy+p-ky) % s == 0 and (ix+p-kx) % s == 0
+        let grad_input = if self.input.requires_grad() {
+            let mut gi = vec![0.0f32; b * c_in * ih * iw];
+            for bi in 0..b {
+                for co in 0..c_out {
+                    for oy in 0..oh {
+                        for ox in 0..ow {
+                            let g = grad_data[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
+                            for ky in 0..kh {
+                                for kx in 0..kw {
+                                    let iy = oy * stride + ky;
+                                    let ix = ox * stride + kx;
+                                    let iy_orig = iy as isize - pad as isize;
+                                    let ix_orig = ix as isize - pad as isize;
+                                    if iy_orig >= 0
+                                        && iy_orig < ih as isize
+                                        && ix_orig >= 0
+                                        && ix_orig < iw as isize
+                                    {
+                                        for ci in 0..c_in {
+                                            let w_idx =
+                                                co * c_in * kh * kw + ci * kh * kw + ky * kw + kx;
+                                            let i_idx = bi * c_in * ih * iw
+                                                + ci * ih * iw
+                                                + iy_orig as usize * iw
+                                                + ix_orig as usize;
+                                            gi[i_idx] += g * weight_data[w_idx];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gi, &[b, c_in, ih, iw]))
+        } else {
+            None
+        };
+
+        // grad_bias[co] = sum_{b, oh_, ow_} grad[b, co, oh_, ow_]
+        let grad_bias = if let Some(ref bias_var) = self.bias {
+            if bias_var.requires_grad() {
+                let mut gb = vec![0.0f32; c_out];
+                for bi in 0..b {
+                    for co in 0..c_out {
+                        for oy in 0..oh {
+                            for ox in 0..ow {
+                                gb[co] +=
+                                    grad_data[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
+                            }
+                        }
+                    }
+                }
+                Some(Tensor::from_vec(gb, &[c_out]))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut grads = vec![grad_input, grad_weight];
+        if self.bias.is_some() {
+            grads.push(grad_bias);
+        }
+        Ok(grads)
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        let mut inputs = vec![self.input.clone(), self.weight.clone()];
+        if let Some(ref bias) = self.bias {
+            inputs.push(bias.clone());
+        }
+        inputs
+    }
+}
+
+/// Conv2d forward pass.
+/// input: [B, C_in, H, W], weight: [C_out, C_in, kH, kW], bias: Option<[C_out]>
+pub fn conv2d_forward(
+    input: &Variable,
+    weight: &Variable,
+    bias: Option<&Variable>,
+    stride: usize,
+    padding: usize,
+) -> Result<Variable> {
+    let input_tensor = input.tensor();
+    let weight_tensor = weight.tensor();
+    let input_shape = input_tensor.shape().to_vec();
+    let weight_shape = weight_tensor.shape().to_vec();
+
+    if input_shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "conv2d requires 4D input [B,C,H,W], got {}D",
+                input_shape.len()
+            ),
+        });
+    }
+    if weight_shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "weight".to_string(),
+            reason: format!(
+                "conv2d requires 4D weight [C_out,C_in,kH,kW], got {}D",
+                weight_shape.len()
+            ),
+        });
+    }
+
+    let batch = input_shape[0];
+    let c_in = input_shape[1];
+    let ih = input_shape[2];
+    let iw = input_shape[3];
+    let c_out = weight_shape[0];
+    let wc_in = weight_shape[1];
+    let kh = weight_shape[2];
+    let kw = weight_shape[3];
+
+    if c_in != wc_in {
+        return Err(TensorError::InvalidArgument {
+            parameter: "weight".to_string(),
+            reason: format!("input channels {} != weight channels {}", c_in, wc_in),
+        });
+    }
+
+    let oh = (ih + 2 * padding - kh) / stride + 1;
+    let ow = (iw + 2 * padding - kw) / stride + 1;
+
+    let input_data = input_tensor.to_vec_f32();
+    let weight_data = weight_tensor.to_vec_f32();
+    let bias_data = bias.map(|b| b.tensor().to_vec_f32());
+
+    let mut output = vec![0.0f32; batch * c_out * oh * ow];
+
+    for bi in 0..batch {
+        for co in 0..c_out {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let mut sum = if let Some(ref bd) = bias_data {
+                        bd[co]
+                    } else {
+                        0.0
+                    };
+                    for ci in 0..c_in {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let iy = oy * stride + ky;
+                                let ix = ox * stride + kx;
+                                let iy_orig = iy as isize - padding as isize;
+                                let ix_orig = ix as isize - padding as isize;
+                                if iy_orig >= 0
+                                    && iy_orig < ih as isize
+                                    && ix_orig >= 0
+                                    && ix_orig < iw as isize
+                                {
+                                    let inp_idx = bi * c_in * ih * iw
+                                        + ci * ih * iw
+                                        + iy_orig as usize * iw
+                                        + ix_orig as usize;
+                                    let w_idx = co * c_in * kh * kw + ci * kh * kw + ky * kw + kx;
+                                    sum += input_data[inp_idx] * weight_data[w_idx];
+                                }
+                            }
+                        }
+                    }
+                    output[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox] = sum;
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &[batch, c_out, oh, ow]);
+    let needs_grad =
+        input.requires_grad() || weight.requires_grad() || bias.is_some_and(|b| b.requires_grad());
+
+    if needs_grad {
+        Ok(Variable::from_op(
+            result,
+            Box::new(Conv2dSavedState {
+                input: input.clone(),
+                weight: weight.clone(),
+                bias: bias.cloned(),
+                input_tensor,
+                weight_tensor,
+                in_channels: c_in,
+                out_channels: c_out,
+                kernel_h: kh,
+                kernel_w: kw,
+                stride,
+                padding,
+                input_h: ih,
+                input_w: iw,
+                batch_size: batch,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- MaxPool2d: 2D max pooling forward + backward ----
+
+pub struct MaxPool2dSavedState {
+    input: Variable,
+    max_indices: Vec<usize>,
+    input_shape: Vec<usize>,
+    output_h: usize,
+    output_w: usize,
+}
+
+impl GradFn for MaxPool2dSavedState {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+
+        let grad_data = grad_output.to_vec_f32();
+        let numel: usize = self.input_shape.iter().product();
+        let mut grad_input = vec![0.0f32; numel];
+
+        let b = self.input_shape[0];
+        let c = self.input_shape[1];
+        let oh = self.output_h;
+        let ow = self.output_w;
+
+        for bi in 0..b {
+            for ci in 0..c {
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let out_idx = bi * c * oh * ow + ci * oh * ow + oy * ow + ox;
+                        let max_idx = self.max_indices[out_idx];
+                        grad_input[max_idx] += grad_data[out_idx];
+                    }
+                }
+            }
+        }
+
+        Ok(vec![Some(Tensor::from_vec(grad_input, &self.input_shape))])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// MaxPool2d forward pass.
+/// input: [B, C, H, W], output: [B, C, oH, oW]
+pub fn max_pool2d_forward(input: &Variable, kernel_size: usize, stride: usize) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape().to_vec();
+    if shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "max_pool2d requires 4D input [B,C,H,W], got {}D",
+                shape.len()
+            ),
+        });
+    }
+
+    let batch = shape[0];
+    let channels = shape[1];
+    let ih = shape[2];
+    let iw = shape[3];
+    let oh = (ih - kernel_size) / stride + 1;
+    let ow = (iw - kernel_size) / stride + 1;
+
+    let data = tensor.to_vec_f32();
+    let mut output = vec![0.0f32; batch * channels * oh * ow];
+    let mut max_indices = vec![0usize; batch * channels * oh * ow];
+
+    for bi in 0..batch {
+        for ci in 0..channels {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let mut max_val = f32::NEG_INFINITY;
+                    let mut max_idx = 0usize;
+                    for ky in 0..kernel_size {
+                        for kx in 0..kernel_size {
+                            let iy = oy * stride + ky;
+                            let ix = ox * stride + kx;
+                            let idx = bi * channels * ih * iw + ci * ih * iw + iy * iw + ix;
+                            if data[idx] > max_val {
+                                max_val = data[idx];
+                                max_idx = idx;
+                            }
+                        }
+                    }
+                    let out_idx = bi * channels * oh * ow + ci * oh * ow + oy * ow + ox;
+                    output[out_idx] = max_val;
+                    max_indices[out_idx] = max_idx;
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &[batch, channels, oh, ow]);
+
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(MaxPool2dSavedState {
+                input: input.clone(),
+                max_indices,
+                input_shape: shape,
+                output_h: oh,
+                output_w: ow,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
 /// Transpose a 2D variable while preserving the computation graph.
 pub fn transpose_forward(input: &Variable) -> Result<Variable> {
     let tensor = input.tensor();

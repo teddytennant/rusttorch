@@ -218,6 +218,11 @@ impl Variable {
     pub fn t(&self) -> Result<Variable> {
         crate::autograd::ops::transpose_forward(self)
     }
+
+    /// Reshape the variable (preserves computation graph).
+    pub fn reshape(&self, new_shape: &[usize]) -> Result<Variable> {
+        crate::autograd::ops::reshape_forward(self, new_shape)
+    }
 }
 
 impl fmt::Debug for Variable {
