@@ -7,6 +7,7 @@ use crate::autograd::Variable;
 use crate::error::Result;
 use crate::nn::module::Module;
 use crate::nn::parameter::Parameter;
+use crate::nn::state_dict::StateDict;
 use crate::tensor::Tensor;
 use std::cell::Cell;
 
@@ -102,6 +103,39 @@ impl Module for BatchNorm2d {
 
     fn parameters(&self) -> Vec<Parameter> {
         vec![self.weight.clone(), self.bias.clone()]
+    }
+
+    fn state_dict(&self) -> StateDict {
+        let mut sd = StateDict::new();
+        sd.insert("weight", self.weight.tensor());
+        sd.insert("bias", self.bias.tensor());
+        // Include non-learnable running stats as buffers
+        let rm = self.running_mean.borrow();
+        sd.insert(
+            "running_mean",
+            Tensor::from_vec(rm.clone(), &[self.num_features]),
+        );
+        let rv = self.running_var.borrow();
+        sd.insert(
+            "running_var",
+            Tensor::from_vec(rv.clone(), &[self.num_features]),
+        );
+        sd
+    }
+
+    fn load_state_dict(&self, state_dict: &StateDict) {
+        if let Some(t) = state_dict.get("weight") {
+            self.weight.update(t.clone());
+        }
+        if let Some(t) = state_dict.get("bias") {
+            self.bias.update(t.clone());
+        }
+        if let Some(t) = state_dict.get("running_mean") {
+            *self.running_mean.borrow_mut() = t.to_vec_f32();
+        }
+        if let Some(t) = state_dict.get("running_var") {
+            *self.running_var.borrow_mut() = t.to_vec_f32();
+        }
     }
 }
 

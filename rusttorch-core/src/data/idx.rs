@@ -72,7 +72,9 @@ pub fn parse_idx<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<usize>), Strin
 /// Parse an IDX file containing images and return as f32 values normalized to [0, 1].
 ///
 /// Returns (data, num_images, rows, cols).
-pub fn parse_idx_images<R: Read>(reader: &mut R) -> Result<(Vec<f32>, usize, usize, usize), String> {
+pub fn parse_idx_images<R: Read>(
+    reader: &mut R,
+) -> Result<(Vec<f32>, usize, usize, usize), String> {
     let (raw, shape) = parse_idx(reader)?;
 
     if shape.len() != 3 {

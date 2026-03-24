@@ -4,6 +4,7 @@ use crate::autograd::Variable;
 use crate::error::Result;
 use crate::nn::module::Module;
 use crate::nn::parameter::Parameter;
+use crate::nn::state_dict::StateDict;
 
 /// A sequential container that chains modules in order.
 ///
@@ -54,6 +55,24 @@ impl Module for Sequential {
             .iter()
             .flat_map(|layer| layer.parameters())
             .collect()
+    }
+
+    fn state_dict(&self) -> StateDict {
+        let mut sd = StateDict::new();
+        for (i, layer) in self.layers.iter().enumerate() {
+            let layer_sd = layer.state_dict();
+            sd.merge_prefixed(&i.to_string(), &layer_sd);
+        }
+        sd
+    }
+
+    fn load_state_dict(&self, state_dict: &StateDict) {
+        for (i, layer) in self.layers.iter().enumerate() {
+            let sub = state_dict.sub_dict(&i.to_string());
+            if !sub.is_empty() {
+                layer.load_state_dict(&sub);
+            }
+        }
     }
 }
 
