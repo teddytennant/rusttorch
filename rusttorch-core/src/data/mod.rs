@@ -5,6 +5,11 @@
 //! - Batching and shuffling
 //! - Data normalization
 //! - Train/val/test splitting
+//! - IDX binary format parsing (MNIST)
+//! - MNIST dataset loading (with `datasets` feature)
+
+pub mod idx;
+pub mod mnist;
 
 use crate::tensor::{Tensor, TensorData};
 use crate::DType;

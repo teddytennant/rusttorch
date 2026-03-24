@@ -1,5 +1,8 @@
 # RustTorch - Rust/Python Extension .gitignore
 
+# Dataset files (downloaded MNIST etc.)
+/data/
+
 # Python
 __pycache__/
 *.py[cod]
