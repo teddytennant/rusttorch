@@ -81,7 +81,16 @@ impl MultiHeadAttention {
     /// Input: [batch, seq_len, d_model]
     /// Returns: [batch, seq_len, d_model]
     pub fn forward_self_attn(&self, input: &Variable) -> Result<Variable> {
-        self.forward_qkv(input, input, input)
+        self.forward_impl(input, input, input, false)
+    }
+
+    /// Forward pass for causal self-attention (Q=K=V=input with lower-triangular mask).
+    ///
+    /// Each position can only attend to itself and previous positions.
+    /// Input: [batch, seq_len, d_model]
+    /// Returns: [batch, seq_len, d_model]
+    pub fn forward_causal(&self, input: &Variable) -> Result<Variable> {
+        self.forward_impl(input, input, input, true)
     }
 
     /// Forward pass with separate Q, K, V inputs (cross-attention).
@@ -95,6 +104,16 @@ impl MultiHeadAttention {
         query: &Variable,
         key: &Variable,
         value: &Variable,
+    ) -> Result<Variable> {
+        self.forward_impl(query, key, value, false)
+    }
+
+    fn forward_impl(
+        &self,
+        query: &Variable,
+        key: &Variable,
+        value: &Variable,
+        causal: bool,
     ) -> Result<Variable> {
         let q_shape = query.shape();
         let k_shape = key.shape();
@@ -120,9 +139,12 @@ impl MultiHeadAttention {
         let k = k.reshape(&[batch * self.num_heads, seq_k, self.head_dim])?;
         let v = v.reshape(&[batch * self.num_heads, seq_k, self.head_dim])?;
 
-        // Scaled dot-product attention
-        let (attn_output, _attn_weights) =
-            crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v)?;
+        // Scaled dot-product attention (with optional causal masking)
+        let (attn_output, _attn_weights) = if causal {
+            crate::autograd::ops::scaled_dot_product_attention_causal_forward(&q, &k, &v)?
+        } else {
+            crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v)?
+        };
 
         // Reshape back: [B * num_heads, seq_q, head_dim] → [B, seq_q, d_model]
         let attn_output = attn_output.reshape(&[batch, seq_q, self.d_model])?;

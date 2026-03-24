@@ -39,6 +39,9 @@ required-features = ["datasets"]
 name = "cifar10"
 required-features = ["datasets"]
 
+[[example]]
+name = "gpt_char"
+
 [[bench]]
 name = "tensor_ops"
 harness = false

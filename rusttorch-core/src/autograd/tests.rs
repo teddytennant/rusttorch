@@ -575,4 +575,180 @@ mod tests {
             assert!((g - e).abs() < 1e-4, "got {}, expected {}", g, e);
         }
     }
+
+    // ---- GELU tests ----
+
+    #[test]
+    fn test_gelu_forward_values() {
+        // GELU(0) = 0, GELU(large positive) ≈ x, GELU(large negative) ≈ 0
+        let x = Variable::new(Tensor::from_vec(vec![-3.0, -1.0, 0.0, 1.0, 3.0], &[5]), true);
+        let y = x.gelu();
+        let result = y.tensor().to_vec_f32();
+
+        // GELU(0) should be very close to 0
+        assert!(result[2].abs() < 1e-6, "GELU(0) should be ~0, got {}", result[2]);
+
+        // GELU(-3) should be very close to 0
+        assert!(result[0].abs() < 0.01, "GELU(-3) should be ~0, got {}", result[0]);
+
+        // GELU(3) should be close to 3
+        assert!((result[4] - 3.0).abs() < 0.01, "GELU(3) should be ~3, got {}", result[4]);
+
+        // GELU(1) ≈ 0.841
+        assert!((result[3] - 0.841).abs() < 0.01, "GELU(1) should be ~0.841, got {}", result[3]);
+
+        // GELU(-1) ≈ -0.159
+        assert!((result[1] - (-0.159)).abs() < 0.01, "GELU(-1) should be ~-0.159, got {}", result[1]);
+    }
+
+    #[test]
+    fn test_gelu_backward() {
+        let x = Variable::new(Tensor::from_vec(vec![0.0, 1.0, -1.0, 2.0], &[4]), true);
+        let y = x.gelu();
+        let loss = y.sum().unwrap();
+        loss.backward().unwrap();
+
+        let grad = x.grad().unwrap().to_vec_f32();
+        // GELU'(0) = 0.5
+        assert!((grad[0] - 0.5).abs() < 0.01, "GELU'(0) should be ~0.5, got {}", grad[0]);
+        // All gradients should be finite
+        for g in &grad {
+            assert!(g.is_finite(), "gradient should be finite, got {}", g);
+        }
+    }
+
+    #[test]
+    fn test_gelu_numerical_gradient() {
+        let x_data = vec![0.5, -0.5, 1.5, -1.5];
+        let eps = 1e-4;
+
+        let x = Variable::new(Tensor::from_vec(x_data.clone(), &[4]), true);
+        let y = x.gelu();
+        let loss = y.sum().unwrap();
+        loss.backward().unwrap();
+        let analytical = x.grad().unwrap().to_vec_f32();
+
+        // Numerical gradient via central differences
+        for i in 0..x_data.len() {
+            let mut x_plus = x_data.clone();
+            x_plus[i] += eps;
+            let y_plus = Variable::new(Tensor::from_vec(x_plus, &[4]), false).gelu();
+            let l_plus = y_plus.tensor().to_vec_f32().iter().sum::<f32>();
+
+            let mut x_minus = x_data.clone();
+            x_minus[i] -= eps;
+            let y_minus = Variable::new(Tensor::from_vec(x_minus, &[4]), false).gelu();
+            let l_minus = y_minus.tensor().to_vec_f32().iter().sum::<f32>();
+
+            let numerical = (l_plus - l_minus) / (2.0 * eps);
+            assert!(
+                (analytical[i] - numerical).abs() < 1e-3,
+                "GELU gradient mismatch at {}: analytical={}, numerical={}",
+                i, analytical[i], numerical
+            );
+        }
+    }
+
+    #[test]
+    fn test_gelu_no_grad() {
+        let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0], &[2]), false);
+        let y = x.gelu();
+        assert!(!y.requires_grad());
+    }
+
+    // ---- Causal attention tests ----
+
+    #[test]
+    fn test_causal_attention_mask_applied() {
+        // With causal masking, position 0 should only attend to position 0,
+        // position 1 to positions 0-1, etc.
+        let seq_len = 4;
+        let d_k = 2;
+        let batch = 1;
+
+        // Use identity-like Q and K so attention scores are predictable
+        let q = Variable::new(
+            Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0], &[batch, seq_len, d_k]),
+            true,
+        );
+        let k = q.clone();
+        let v = Variable::new(
+            Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0, 0.0], &[batch, seq_len, d_k]),
+            false,
+        );
+
+        let (_, attn_weights) =
+            crate::autograd::ops::scaled_dot_product_attention_causal_forward(&q, &k, &v)
+                .unwrap();
+        let weights = attn_weights.to_vec_f32();
+
+        // Position 0 should only attend to position 0 (weight = 1.0)
+        assert!((weights[0] - 1.0).abs() < 1e-5, "pos 0 should attend only to pos 0");
+        assert!(weights[1].abs() < 1e-5, "pos 0 should NOT attend to pos 1");
+        assert!(weights[2].abs() < 1e-5, "pos 0 should NOT attend to pos 2");
+        assert!(weights[3].abs() < 1e-5, "pos 0 should NOT attend to pos 3");
+
+        // Position 1 should only attend to positions 0-1 (sum = 1.0, pos 2-3 = 0)
+        assert!(weights[6].abs() < 1e-5, "pos 1 should NOT attend to pos 2");
+        assert!(weights[7].abs() < 1e-5, "pos 1 should NOT attend to pos 3");
+    }
+
+    #[test]
+    fn test_causal_attention_backward() {
+        let batch = 1;
+        let seq = 3;
+        let d = 4;
+        let q = Variable::new(Tensor::from_vec(vec![0.1; batch * seq * d], &[batch, seq, d]), true);
+        let k = Variable::new(Tensor::from_vec(vec![0.2; batch * seq * d], &[batch, seq, d]), true);
+        let v = Variable::new(Tensor::from_vec(vec![0.3; batch * seq * d], &[batch, seq, d]), true);
+
+        let (out, _) =
+            crate::autograd::ops::scaled_dot_product_attention_causal_forward(&q, &k, &v)
+                .unwrap();
+        let loss = out.sum().unwrap();
+        loss.backward().unwrap();
+
+        assert!(q.grad().is_some(), "Q should have gradient");
+        assert!(k.grad().is_some(), "K should have gradient");
+        assert!(v.grad().is_some(), "V should have gradient");
+    }
+
+    #[test]
+    fn test_causal_vs_noncausal_differ() {
+        // With seq_len > 1 and non-uniform values, causal and non-causal should produce different outputs
+        let batch = 1;
+        let seq = 3;
+        let d = 4;
+        let data: Vec<f32> = (0..batch * seq * d).map(|i| (i as f32) * 0.1).collect();
+        let q = Variable::new(Tensor::from_vec(data.clone(), &[batch, seq, d]), false);
+        let k = Variable::new(Tensor::from_vec(data.clone(), &[batch, seq, d]), false);
+        let v = Variable::new(Tensor::from_vec(data, &[batch, seq, d]), false);
+
+        let (out_causal, _) =
+            crate::autograd::ops::scaled_dot_product_attention_causal_forward(&q, &k, &v).unwrap();
+        let (out_normal, _) =
+            crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+
+        let causal_data = out_causal.tensor().to_vec_f32();
+        let normal_data = out_normal.tensor().to_vec_f32();
+
+        // The outputs should differ overall (causal restricts attention)
+        let mut any_differ = false;
+        for i in 0..causal_data.len() {
+            if (causal_data[i] - normal_data[i]).abs() > 1e-5 {
+                any_differ = true;
+                break;
+            }
+        }
+        assert!(any_differ, "causal and non-causal should produce different outputs");
+
+        // The last position should be identical (can attend to all positions in both cases)
+        let last_start = (seq - 1) * d;
+        for d_idx in 0..d {
+            assert!(
+                (causal_data[last_start + d_idx] - normal_data[last_start + d_idx]).abs() < 1e-5,
+                "last position should be identical between causal and non-causal"
+            );
+        }
+    }
 }
