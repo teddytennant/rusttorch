@@ -15,6 +15,65 @@ pub trait Optimizer {
     fn zero_grad(&self);
 }
 
+// --- Gradient Clipping ---
+
+/// Clip gradients by maximum norm (L2 norm).
+///
+/// Rescales all parameter gradients so their combined L2 norm does not exceed
+/// `max_norm`. This is the standard gradient clipping method used in training
+/// deep networks (RNNs, Transformers, deep ResNets).
+///
+/// Returns the total gradient norm before clipping.
+///
+/// # Arguments
+/// * `params` — parameters whose gradients to clip
+/// * `max_norm` — maximum allowed L2 norm
+pub fn clip_grad_norm(params: &[Parameter], max_norm: f32) -> f32 {
+    // Compute total L2 norm across all parameter gradients
+    let mut total_norm_sq = 0.0f64;
+    for param in params {
+        if let Some(grad) = param.grad() {
+            let g = grad.to_vec_f32();
+            for &v in &g {
+                total_norm_sq += (v as f64) * (v as f64);
+            }
+        }
+    }
+    let total_norm = total_norm_sq.sqrt() as f32;
+
+    if total_norm > max_norm {
+        let scale = max_norm / (total_norm + 1e-6);
+        for param in params {
+            if let Some(grad) = param.grad() {
+                let clipped: Vec<f32> = grad.to_vec_f32().iter().map(|&v| v * scale).collect();
+                param.set_grad(Tensor::from_vec(clipped, grad.shape()));
+            }
+        }
+    }
+
+    total_norm
+}
+
+/// Clip gradients by value.
+///
+/// Clamps each gradient element to `[-clip_value, clip_value]`.
+///
+/// # Arguments
+/// * `params` — parameters whose gradients to clip
+/// * `clip_value` — maximum absolute value for any gradient element
+pub fn clip_grad_value(params: &[Parameter], clip_value: f32) {
+    for param in params {
+        if let Some(grad) = param.grad() {
+            let clipped: Vec<f32> = grad
+                .to_vec_f32()
+                .iter()
+                .map(|&v| v.clamp(-clip_value, clip_value))
+                .collect();
+            param.set_grad(Tensor::from_vec(clipped, grad.shape()));
+        }
+    }
+}
+
 /// Stochastic Gradient Descent optimizer.
 ///
 /// Supports momentum and weight decay (L2 regularization).

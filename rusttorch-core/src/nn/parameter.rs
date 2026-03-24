@@ -89,6 +89,12 @@ impl Parameter {
         inner.tensor = new_tensor;
         inner.grad = None;
     }
+
+    /// Set the gradient tensor (used by gradient clipping).
+    pub fn set_grad(&self, grad: Tensor) {
+        let mut inner = self.var.inner.borrow_mut();
+        inner.grad = Some(grad);
+    }
 }
 
 impl std::fmt::Debug for Parameter {
