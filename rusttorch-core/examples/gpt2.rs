@@ -1,19 +1,19 @@
 //! GPT-2 text generation — load pre-trained weights and generate text.
 //!
 //! Downloads GPT-2 Small (124M params) from HuggingFace, loads weights
-//! via safetensors, and generates text autoregressively.
+//! via safetensors, and generates text autoregressively with KV caching.
 //!
 //! Run with:
 //!   cargo run -p rusttorch-core --example gpt2 --features datasets --release
 //!
 //! Optional arguments:
-//!   cargo run -p rusttorch-core --example gpt2 --features datasets --release -- "Your prompt" 50 0.8
-//!   (prompt, max_tokens, temperature)
+//!   cargo run -p rusttorch-core --example gpt2 --features datasets --release -- "Your prompt" 50
+//!   (prompt, max_tokens)
 //!
 //! First run downloads ~550MB of model files to ~/.cache/rusttorch/gpt2/
 
 use rusttorch_core::data::tokenizer::BpeTokenizer;
-use rusttorch_core::nn::gpt2::{Gpt2Config, Gpt2Model};
+use rusttorch_core::nn::gpt2::{GenerationConfig, Gpt2Config, Gpt2Model};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -54,7 +54,6 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let prompt = if args.len() > 1 { &args[1] } else { "The meaning of life is" };
     let max_tokens: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
-    let temperature: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.8);
 
     println!("=== RustTorch GPT-2 Text Generation ===\n");
 
@@ -95,11 +94,21 @@ fn main() {
     let prompt_ids = tokenizer.encode(prompt);
     eprintln!("  Prompt: \"{}\" ({} tokens)\n", prompt, prompt_ids.len());
 
-    // Generate with KV cache (fast)
-    println!("Generating {} tokens with KV cache (temperature={})...\n", max_tokens, temperature);
+    // Generate with creative config (top-k + top-p + repetition penalty + KV cache)
+    let gen_config = GenerationConfig {
+        max_new_tokens: max_tokens,
+        temperature: 0.9,
+        top_k: 50,
+        top_p: 0.95,
+        repetition_penalty: 1.2,
+    };
+
+    println!("Generating {} tokens (temp={}, top_k={}, top_p={}, rep_penalty={})...\n",
+        gen_config.max_new_tokens, gen_config.temperature,
+        gen_config.top_k, gen_config.top_p, gen_config.repetition_penalty);
 
     let t0 = Instant::now();
-    let output_ids = model.generate_cached(&prompt_ids, max_tokens, temperature)
+    let output_ids = model.generate_with_config(&prompt_ids, &gen_config)
         .expect("Generation failed");
     let elapsed = t0.elapsed();
 

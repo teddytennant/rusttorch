@@ -27,6 +27,57 @@ fn err_str<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Text generation configuration.
+#[derive(Debug, Clone)]
+pub struct GenerationConfig {
+    /// Number of tokens to generate.
+    pub max_new_tokens: usize,
+    /// Sampling temperature (0.0 = greedy, higher = more random).
+    pub temperature: f32,
+    /// Top-k sampling: only consider the k most likely tokens (0 = disabled).
+    pub top_k: usize,
+    /// Top-p (nucleus) sampling: only consider tokens whose cumulative probability
+    /// exceeds p (1.0 = disabled).
+    pub top_p: f32,
+    /// Repetition penalty: penalize tokens that have already appeared.
+    /// 1.0 = no penalty, >1.0 = less repetition.
+    pub repetition_penalty: f32,
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        GenerationConfig {
+            max_new_tokens: 50,
+            temperature: 0.8,
+            top_k: 0,
+            top_p: 1.0,
+            repetition_penalty: 1.0,
+        }
+    }
+}
+
+impl GenerationConfig {
+    /// Greedy generation (deterministic).
+    pub fn greedy(max_new_tokens: usize) -> Self {
+        GenerationConfig {
+            max_new_tokens,
+            temperature: 0.0,
+            ..Default::default()
+        }
+    }
+
+    /// Good defaults for creative text (top-p + repetition penalty).
+    pub fn creative(max_new_tokens: usize) -> Self {
+        GenerationConfig {
+            max_new_tokens,
+            temperature: 0.9,
+            top_k: 50,
+            top_p: 0.95,
+            repetition_penalty: 1.2,
+        }
+    }
+}
+
 /// GPT-2 model configuration.
 #[derive(Debug, Clone)]
 pub struct Gpt2Config {
@@ -383,6 +434,39 @@ impl Gpt2Model {
             } else {
                 sample_with_temperature(&row_logits, temperature)
             };
+            tokens.push(next_token);
+        }
+
+        Ok(tokens)
+    }
+
+    /// Generate text with full config (top-k, top-p, repetition penalty, KV cache).
+    ///
+    /// This is the recommended generation method. Uses KV caching for speed
+    /// and supports all standard sampling techniques.
+    pub fn generate_with_config(
+        &self,
+        token_ids: &[u32],
+        config: &GenerationConfig,
+    ) -> Result<Vec<u32>, String> {
+        let mut tokens = token_ids.to_vec();
+        let mut cache = self.new_cache();
+
+        // Prefill
+        let logits = self.forward_cached(token_ids, &mut cache)?;
+        let prompt_len = token_ids.len();
+        let last_logits = extract_row(&logits, prompt_len - 1)?;
+
+        let next_token = sample_logits(&last_logits, &tokens, config);
+        tokens.push(next_token);
+
+        // Decode
+        for _ in 1..config.max_new_tokens {
+            let last_token = *tokens.last().unwrap();
+            let logits = self.forward_cached(&[last_token], &mut cache)?;
+            let row_logits = extract_row(&logits, 0)?;
+
+            let next_token = sample_logits(&row_logits, &tokens, config);
             tokens.push(next_token);
         }
 
@@ -783,6 +867,127 @@ fn argmax_f32(data: &[f32]) -> u32 {
     max_idx as u32
 }
 
+/// Full sampling pipeline: repetition penalty → temperature → top-k → top-p → sample.
+fn sample_logits(logits: &[f32], existing_tokens: &[u32], config: &GenerationConfig) -> u32 {
+    if config.temperature <= 0.0 {
+        // Greedy: just apply repetition penalty and pick the max
+        if config.repetition_penalty != 1.0 {
+            let mut modified = logits.to_vec();
+            apply_repetition_penalty(&mut modified, existing_tokens, config.repetition_penalty);
+            return argmax_f32(&modified);
+        }
+        return argmax_f32(logits);
+    }
+
+    let mut modified = logits.to_vec();
+
+    // 1. Repetition penalty
+    if config.repetition_penalty != 1.0 {
+        apply_repetition_penalty(&mut modified, existing_tokens, config.repetition_penalty);
+    }
+
+    // 2. Temperature scaling
+    for v in modified.iter_mut() {
+        *v /= config.temperature;
+    }
+
+    // 3. Top-k filtering
+    if config.top_k > 0 && config.top_k < modified.len() {
+        apply_top_k(&mut modified, config.top_k);
+    }
+
+    // 4. Top-p (nucleus) filtering
+    if config.top_p < 1.0 && config.top_p > 0.0 {
+        apply_top_p(&mut modified, config.top_p);
+    }
+
+    // 5. Sample from filtered distribution
+    sample_from_logits(&modified)
+}
+
+/// Apply repetition penalty: divide logits of previously seen tokens by penalty factor.
+/// Positive logits are divided, negative logits are multiplied (making them more negative).
+fn apply_repetition_penalty(logits: &mut [f32], tokens: &[u32], penalty: f32) {
+    for &tok in tokens {
+        let idx = tok as usize;
+        if idx < logits.len() {
+            if logits[idx] > 0.0 {
+                logits[idx] /= penalty;
+            } else {
+                logits[idx] *= penalty;
+            }
+        }
+    }
+}
+
+/// Top-k filtering: keep only the k highest logits, set rest to -inf.
+fn apply_top_k(logits: &mut [f32], k: usize) {
+    // Find the k-th largest value
+    let mut sorted: Vec<f32> = logits.to_vec();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let threshold = sorted[k.min(sorted.len()) - 1];
+
+    for v in logits.iter_mut() {
+        if *v < threshold {
+            *v = f32::NEG_INFINITY;
+        }
+    }
+}
+
+/// Top-p (nucleus) filtering: keep the smallest set of tokens whose cumulative
+/// probability exceeds p, set the rest to -inf.
+fn apply_top_p(logits: &mut [f32], p: f32) {
+    // Compute softmax to get probabilities
+    let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|&x| (x - max_val).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    let probs: Vec<f32> = exp.iter().map(|&x| x / sum).collect();
+
+    // Sort indices by probability descending
+    let mut indices: Vec<usize> = (0..probs.len()).collect();
+    indices.sort_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find cutoff: smallest set exceeding p
+    let mut cumsum = 0.0;
+    let mut keep = vec![false; probs.len()];
+    for &idx in &indices {
+        keep[idx] = true;
+        cumsum += probs[idx];
+        if cumsum >= p {
+            break;
+        }
+    }
+
+    // Set non-kept logits to -inf
+    for (i, v) in logits.iter_mut().enumerate() {
+        if !keep[i] {
+            *v = f32::NEG_INFINITY;
+        }
+    }
+}
+
+/// Sample from logits (applies softmax internally).
+fn sample_from_logits(logits: &[f32]) -> u32 {
+    use rand::Rng;
+
+    let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|&x| (x - max_val).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    let probs: Vec<f32> = exp.iter().map(|&x| x / sum).collect();
+
+    let mut rng = rand::thread_rng();
+    let r: f32 = rng.gen();
+    let mut cumsum = 0.0;
+    for (i, &p_val) in probs.iter().enumerate() {
+        cumsum += p_val;
+        if r < cumsum {
+            return i as u32;
+        }
+    }
+
+    (probs.len() - 1) as u32
+}
+
 /// Sample from logits with temperature.
 fn sample_with_temperature(logits: &[f32], temperature: f32) -> u32 {
     use rand::Rng;
@@ -1083,6 +1288,167 @@ mod tests {
         let data = result.to_vec_f32();
         assert!((data[0] - 1.0).abs() < 0.01);
         assert!((data[1] - 2.0).abs() < 0.01);
+    }
+
+    // ---- Sampling Tests ----
+
+    #[test]
+    fn test_generation_config_defaults() {
+        let config = GenerationConfig::default();
+        assert_eq!(config.max_new_tokens, 50);
+        assert!((config.temperature - 0.8).abs() < 0.01);
+        assert_eq!(config.top_k, 0);
+        assert!((config.top_p - 1.0).abs() < 0.01);
+        assert!((config.repetition_penalty - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_generation_config_greedy() {
+        let config = GenerationConfig::greedy(100);
+        assert_eq!(config.max_new_tokens, 100);
+        assert!((config.temperature).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_generation_config_creative() {
+        let config = GenerationConfig::creative(100);
+        assert_eq!(config.top_k, 50);
+        assert!((config.top_p - 0.95).abs() < 0.01);
+        assert!((config.repetition_penalty - 1.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_repetition_penalty_positive() {
+        let mut logits = vec![5.0, 3.0, 1.0, 0.5];
+        apply_repetition_penalty(&mut logits, &[0, 2], 2.0);
+        assert!((logits[0] - 2.5).abs() < 0.01); // 5.0 / 2.0
+        assert!((logits[1] - 3.0).abs() < 0.01); // unchanged
+        assert!((logits[2] - 0.5).abs() < 0.01); // 1.0 / 2.0
+        assert!((logits[3] - 0.5).abs() < 0.01); // unchanged
+    }
+
+    #[test]
+    fn test_repetition_penalty_negative() {
+        let mut logits = vec![-2.0, 3.0];
+        apply_repetition_penalty(&mut logits, &[0], 2.0);
+        assert!((logits[0] - (-4.0)).abs() < 0.01); // -2.0 * 2.0 = -4.0
+        assert!((logits[1] - 3.0).abs() < 0.01); // unchanged
+    }
+
+    #[test]
+    fn test_repetition_penalty_no_effect() {
+        let mut logits = vec![5.0, 3.0];
+        let original = logits.clone();
+        apply_repetition_penalty(&mut logits, &[0], 1.0);
+        assert_eq!(logits, original); // penalty = 1.0 means no change
+    }
+
+    #[test]
+    fn test_top_k_filtering() {
+        let mut logits = vec![1.0, 5.0, 3.0, 2.0, 4.0];
+        apply_top_k(&mut logits, 3);
+        // Should keep top 3: indices 1 (5.0), 4 (4.0), 2 (3.0)
+        assert_eq!(logits[0], f32::NEG_INFINITY); // 1.0 filtered
+        assert!((logits[1] - 5.0).abs() < 0.01); // kept
+        assert!((logits[2] - 3.0).abs() < 0.01); // kept
+        assert_eq!(logits[3], f32::NEG_INFINITY); // 2.0 filtered
+        assert!((logits[4] - 4.0).abs() < 0.01); // kept
+    }
+
+    #[test]
+    fn test_top_k_larger_than_vocab() {
+        let mut logits = vec![1.0, 2.0, 3.0];
+        let original = logits.clone();
+        apply_top_k(&mut logits, 10); // k > len, should keep all
+        assert_eq!(logits, original);
+    }
+
+    #[test]
+    fn test_top_p_filters_low_probability() {
+        // Token 0 has overwhelming probability
+        let mut logits = vec![10.0, 1.0, 1.0, 1.0];
+        apply_top_p(&mut logits, 0.9);
+        // Token 0 has ~99.6% probability, so only it should survive
+        assert!((logits[0] - 10.0).abs() < 0.01);
+        assert_eq!(logits[1], f32::NEG_INFINITY);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+        assert_eq!(logits[3], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_top_p_keeps_enough() {
+        // Two roughly equal tokens
+        let mut logits = vec![5.0, 5.0, -100.0, -100.0];
+        apply_top_p(&mut logits, 0.9);
+        // Both high tokens needed (each ~50%), low tokens filtered
+        assert!((logits[0] - 5.0).abs() < 0.01);
+        assert!((logits[1] - 5.0).abs() < 0.01);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+        assert_eq!(logits[3], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_top_p_one_keeps_all() {
+        let mut logits = vec![1.0, 2.0, 3.0];
+        let original = logits.clone();
+        apply_top_p(&mut logits, 1.0);
+        assert_eq!(logits, original);
+    }
+
+    #[test]
+    fn test_sample_logits_greedy() {
+        let logits = vec![1.0, 5.0, 3.0];
+        let config = GenerationConfig { temperature: 0.0, ..Default::default() };
+        let token = sample_logits(&logits, &[], &config);
+        assert_eq!(token, 1); // index of max
+    }
+
+    #[test]
+    fn test_sample_logits_greedy_with_rep_penalty() {
+        // Token 1 is most likely but has been seen — penalty should demote it
+        let logits = vec![4.5, 5.0, 3.0]; // token 1 is max
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repetition_penalty: 10.0, // very strong penalty
+            ..Default::default()
+        };
+        let token = sample_logits(&logits, &[1], &config);
+        assert_eq!(token, 0); // token 0 should now be highest (4.5 vs 5.0/10.0 = 0.5)
+    }
+
+    #[test]
+    fn test_sample_logits_overwhelming() {
+        // With one token having massive logit, any sampling should pick it
+        let logits = vec![100.0, -100.0, -100.0, -100.0];
+        let config = GenerationConfig::creative(1);
+        let token = sample_logits(&logits, &[], &config);
+        assert_eq!(token, 0);
+    }
+
+    #[test]
+    fn test_generate_with_config_greedy() {
+        let config_m = make_small_config();
+        let sd = make_small_state_dict(&config_m);
+        let model = Gpt2Model::from_state_dict(sd, config_m).unwrap();
+
+        let gen_config = GenerationConfig::greedy(5);
+        let result = model.generate_with_config(&[0, 1], &gen_config).unwrap();
+        assert_eq!(result.len(), 7); // 2 prompt + 5 generated
+
+        // Should match generate_cached with greedy
+        let cached = model.generate_cached(&[0, 1], 5, 0.0).unwrap();
+        assert_eq!(result, cached);
+    }
+
+    #[test]
+    fn test_generate_with_config_length() {
+        let config_m = make_small_config();
+        let sd = make_small_state_dict(&config_m);
+        let model = Gpt2Model::from_state_dict(sd, config_m).unwrap();
+
+        let gen_config = GenerationConfig { max_new_tokens: 3, ..GenerationConfig::creative(3) };
+        let result = model.generate_with_config(&[0], &gen_config).unwrap();
+        assert_eq!(result.len(), 4); // 1 prompt + 3 generated
     }
 
     // ---- KV Cache Tests ----
