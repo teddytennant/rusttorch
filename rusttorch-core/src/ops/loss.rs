@@ -172,6 +172,15 @@ pub fn smooth_l1_loss(predictions: &Tensor, targets: &Tensor, beta: f64) -> Resu
         });
     }
 
+    // Validate data types match
+    if predictions.dtype() != targets.dtype() {
+        return Err(TensorError::DTypeMismatch {
+            expected: format!("{}", targets.dtype()),
+            actual: format!("{}", predictions.dtype()),
+            context: "smooth_l1_loss".to_string(),
+        });
+    }
+
     // Validate beta parameter
     if beta <= 0.0 {
         return Err(TensorError::InvalidArgument {

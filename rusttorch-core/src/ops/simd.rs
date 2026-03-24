@@ -276,14 +276,22 @@ pub fn fused_multiply_add(a: &Tensor, b: &Tensor, c: &Tensor) -> Result<Tensor> 
     if a.shape() != b.shape() || a.shape() != c.shape() {
         return Err(TensorError::ShapeMismatch {
             expected: a.shape().to_vec(),
-            actual: if a.shape() != b.shape() { b.shape().to_vec() } else { c.shape().to_vec() },
+            actual: if a.shape() != b.shape() {
+                b.shape().to_vec()
+            } else {
+                c.shape().to_vec()
+            },
             context: "fused_multiply_add".to_string(),
         });
     }
     if a.dtype() != b.dtype() || a.dtype() != c.dtype() {
         return Err(TensorError::DTypeMismatch {
             expected: format!("{:?}", a.dtype()),
-            actual: if a.dtype() != b.dtype() { format!("{:?}", b.dtype()) } else { format!("{:?}", c.dtype()) },
+            actual: if a.dtype() != b.dtype() {
+                format!("{:?}", b.dtype())
+            } else {
+                format!("{:?}", c.dtype())
+            },
             context: "fused_multiply_add".to_string(),
         });
     }
