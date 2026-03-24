@@ -19,6 +19,7 @@ rand.workspace = true
 num_cpus = "1.16"
 ureq = { version = "2", optional = true }
 flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -28,7 +29,7 @@ tempfile.workspace = true
 [features]
 default = []
 ffi = []  # Enable C FFI exports for PyTorch integration
-datasets = ["ureq", "flate2"]  # Download and load standard datasets (MNIST, etc.)
+datasets = ["ureq", "flate2", "tar"]  # Download and load standard datasets (MNIST, CIFAR-10, etc.)
 
 [[bench]]
 name = "tensor_ops"

@@ -47,6 +47,7 @@ pub mod optim;
 pub mod parameter;
 pub mod pool;
 pub mod residual;
+pub mod resnet;
 pub mod sequential;
 pub mod state_dict;
 
@@ -65,5 +66,6 @@ pub use optim::{Adam, Optimizer, SGD};
 pub use parameter::Parameter;
 pub use pool::{AdaptiveAvgPool2d, AvgPool2d, MaxPool2d};
 pub use residual::ResidualBlock;
+pub use resnet::ResNet;
 pub use sequential::Sequential;
 pub use state_dict::StateDict;
