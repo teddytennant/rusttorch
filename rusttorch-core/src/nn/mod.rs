@@ -63,7 +63,8 @@ pub use linear::Linear;
 pub use loss::{CrossEntropyLoss, MSELoss};
 pub use module::Module;
 pub use optim::{
-    clip_grad_norm, clip_grad_value, Adam, CosineAnnealingLR, MultiStepLR, Optimizer, StepLR, SGD,
+    clip_grad_norm, clip_grad_value, Adam, CosineAnnealingLR, LRScheduler, MultiStepLR, Optimizer,
+    StepLR, WarmupScheduler, SGD,
 };
 pub use parameter::Parameter;
 pub use pool::{AdaptiveAvgPool2d, AvgPool2d, MaxPool2d};

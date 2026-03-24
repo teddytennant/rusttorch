@@ -2828,3 +2828,72 @@ fn test_clip_grad_norm_no_grad() {
     let norm = super::clip_grad_norm(&[p], 1.0);
     assert!((norm - 0.0).abs() < 1e-7);
 }
+
+// --- Warmup Scheduler Tests ---
+
+#[test]
+fn test_warmup_with_cosine() {
+    let inner = super::CosineAnnealingLR::new(0.1, 0.0, 95);
+    let warmup = super::WarmupScheduler::new(0.001, 0.1, 5, inner);
+
+    // Warmup phase: linear from 0.001 to 0.1
+    assert!((warmup.lr_at(0) - 0.001).abs() < 1e-5);
+    // At warmup_epochs/2: midpoint
+    let mid = warmup.lr_at(2);
+    assert!(mid > 0.001 && mid < 0.1, "mid warmup lr = {}", mid);
+    // Just before warmup ends
+    let near_end = warmup.lr_at(4);
+    assert!(near_end > 0.07, "near end warmup lr = {}", near_end);
+
+    // After warmup: cosine from 0.1 to 0.0
+    let post = warmup.lr_at(5);
+    assert!((post - 0.1).abs() < 1e-4, "post warmup lr = {}", post);
+
+    // Late: should be low
+    let late = warmup.lr_at(100);
+    assert!(late < 0.01, "late lr = {}", late);
+}
+
+#[test]
+fn test_warmup_with_step() {
+    let inner = super::StepLR::new(0.1, 30, 0.1);
+    let warmup = super::WarmupScheduler::new(0.0, 0.1, 5, inner);
+
+    assert!((warmup.lr_at(0) - 0.0).abs() < 1e-7);
+    assert!((warmup.lr_at(5) - 0.1).abs() < 1e-5);
+    // After warmup, epoch 5 maps to inner epoch 0 (no decay yet)
+    assert!((warmup.lr_at(34) - 0.1).abs() < 1e-5);
+    // After warmup + 30 = epoch 35 maps to inner epoch 30 (first decay)
+    assert!((warmup.lr_at(35) - 0.01).abs() < 1e-5);
+}
+
+#[test]
+fn test_warmup_monotonic_increase() {
+    let inner = super::CosineAnnealingLR::new(0.1, 0.0, 100);
+    let warmup = super::WarmupScheduler::new(0.0, 0.1, 10, inner);
+
+    let mut prev = 0.0;
+    for epoch in 0..10 {
+        let lr = warmup.lr_at(epoch);
+        assert!(
+            lr >= prev - 1e-7,
+            "Warmup should increase: {} < {}",
+            lr,
+            prev
+        );
+        prev = lr;
+    }
+}
+
+#[test]
+fn test_lr_scheduler_trait() {
+    // Verify all schedulers implement LRScheduler
+    let step: &dyn super::LRScheduler = &super::StepLR::new(0.1, 30, 0.1);
+    assert!((step.lr_at(0) - 0.1).abs() < 1e-7);
+
+    let multi: &dyn super::LRScheduler = &super::MultiStepLR::new(0.1, vec![50], 0.1);
+    assert!((multi.lr_at(0) - 0.1).abs() < 1e-7);
+
+    let cosine: &dyn super::LRScheduler = &super::CosineAnnealingLR::new(0.1, 0.0, 100);
+    assert!((cosine.lr_at(0) - 0.1).abs() < 1e-5);
+}

@@ -400,3 +400,86 @@ impl CosineAnnealingLR {
         self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (1.0 + (t * std::f32::consts::PI).cos())
     }
 }
+
+/// Linear warmup followed by another scheduler.
+///
+/// Linearly ramps LR from `warmup_start_lr` to `base_lr` over `warmup_epochs`,
+/// then delegates to the inner schedule for remaining epochs. Standard pattern
+/// for Transformer and deep ResNet training.
+///
+/// # Usage
+/// ```ignore
+/// let warmup = WarmupScheduler::new(
+///     0.001,  // start LR
+///     0.1,    // peak LR
+///     5,      // warmup epochs
+///     CosineAnnealingLR::new(0.1, 0.0, 200), // inner scheduler
+/// );
+/// optimizer.set_lr(warmup.lr_at(epoch));
+/// ```
+pub struct WarmupScheduler<S> {
+    warmup_start_lr: f32,
+    base_lr: f32,
+    warmup_epochs: usize,
+    inner: S,
+}
+
+/// Trait for any type that can provide a learning rate given an epoch.
+pub trait LRScheduler {
+    /// Compute learning rate for a given epoch.
+    fn lr_at(&self, epoch: usize) -> f32;
+}
+
+impl LRScheduler for StepLR {
+    fn lr_at(&self, epoch: usize) -> f32 {
+        self.lr_at(epoch)
+    }
+}
+
+impl LRScheduler for MultiStepLR {
+    fn lr_at(&self, epoch: usize) -> f32 {
+        self.lr_at(epoch)
+    }
+}
+
+impl LRScheduler for CosineAnnealingLR {
+    fn lr_at(&self, epoch: usize) -> f32 {
+        self.lr_at(epoch)
+    }
+}
+
+impl<S: LRScheduler> WarmupScheduler<S> {
+    /// Create a warmup scheduler.
+    ///
+    /// # Arguments
+    /// * `warmup_start_lr` — LR at epoch 0 (before warmup)
+    /// * `base_lr` — target LR after warmup completes
+    /// * `warmup_epochs` — number of warmup epochs (linear ramp)
+    /// * `inner` — scheduler used after warmup completes
+    pub fn new(warmup_start_lr: f32, base_lr: f32, warmup_epochs: usize, inner: S) -> Self {
+        WarmupScheduler {
+            warmup_start_lr,
+            base_lr,
+            warmup_epochs,
+            inner,
+        }
+    }
+
+    /// Compute learning rate for a given epoch.
+    pub fn lr_at(&self, epoch: usize) -> f32 {
+        if epoch < self.warmup_epochs {
+            // Linear interpolation from warmup_start_lr to base_lr
+            let t = epoch as f32 / self.warmup_epochs as f32;
+            self.warmup_start_lr + t * (self.base_lr - self.warmup_start_lr)
+        } else {
+            // Delegate to inner scheduler (epoch offset by warmup)
+            self.inner.lr_at(epoch - self.warmup_epochs)
+        }
+    }
+}
+
+impl<S: LRScheduler> LRScheduler for WarmupScheduler<S> {
+    fn lr_at(&self, epoch: usize) -> f32 {
+        self.lr_at(epoch)
+    }
+}
