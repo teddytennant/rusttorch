@@ -95,11 +95,11 @@ fn main() {
     let prompt_ids = tokenizer.encode(prompt);
     eprintln!("  Prompt: \"{}\" ({} tokens)\n", prompt, prompt_ids.len());
 
-    // Generate
-    println!("Generating {} tokens (temperature={})...\n", max_tokens, temperature);
+    // Generate with KV cache (fast)
+    println!("Generating {} tokens with KV cache (temperature={})...\n", max_tokens, temperature);
 
     let t0 = Instant::now();
-    let output_ids = model.generate(&prompt_ids, max_tokens, temperature)
+    let output_ids = model.generate_cached(&prompt_ids, max_tokens, temperature)
         .expect("Generation failed");
     let elapsed = t0.elapsed();
 

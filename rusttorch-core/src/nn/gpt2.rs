@@ -52,6 +52,77 @@ impl Gpt2Config {
     }
 }
 
+/// KV cache for efficient autoregressive generation.
+///
+/// Stores key/value projections from all previous positions so that
+/// each new token only needs to compute its own QKV, not the entire sequence.
+/// This transforms generation from O(n²) to O(n) total attention work.
+pub struct KVCache {
+    layers: Vec<LayerKVCache>,
+}
+
+struct LayerKVCache {
+    /// keys[head] = flat [cached_len * head_dim]
+    keys: Vec<Vec<f32>>,
+    /// values[head] = flat [cached_len * head_dim]
+    values: Vec<Vec<f32>>,
+    cached_len: usize,
+}
+
+impl KVCache {
+    /// Create an empty KV cache for a model.
+    pub fn new(n_layer: usize, n_head: usize, _head_dim: usize) -> Self {
+        let layers = (0..n_layer)
+            .map(|_| LayerKVCache {
+                keys: vec![Vec::new(); n_head],
+                values: vec![Vec::new(); n_head],
+                cached_len: 0,
+            })
+            .collect();
+        KVCache { layers }
+    }
+
+    /// Number of cached positions.
+    pub fn len(&self) -> usize {
+        if self.layers.is_empty() {
+            0
+        } else {
+            self.layers[0].cached_len
+        }
+    }
+
+    /// Whether the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Clear the cache.
+    pub fn clear(&mut self) {
+        for layer in &mut self.layers {
+            for k in &mut layer.keys {
+                k.clear();
+            }
+            for v in &mut layer.values {
+                v.clear();
+            }
+            layer.cached_len = 0;
+        }
+    }
+}
+
+impl LayerKVCache {
+    /// Append new key/value data for all heads.
+    /// new_k, new_v: flat [n_head * new_len * head_dim] in interleaved layout [pos, n_head, head_dim]
+    fn append(&mut self, new_k_per_head: &[Vec<f32>], new_v_per_head: &[Vec<f32>], new_len: usize) {
+        let n_head = self.keys.len();
+        for h in 0..n_head {
+            self.keys[h].extend_from_slice(&new_k_per_head[h]);
+            self.values[h].extend_from_slice(&new_v_per_head[h]);
+        }
+        self.cached_len += new_len;
+    }
+}
+
 /// GPT-2 model for inference.
 #[allow(missing_debug_implementations)]
 pub struct Gpt2Model {
@@ -181,7 +252,7 @@ impl Gpt2Model {
         Ok(logits)
     }
 
-    /// Generate text autoregressively.
+    /// Generate text autoregressively (no cache — recomputes full context each step).
     ///
     /// - `token_ids`: prompt token IDs
     /// - `max_new_tokens`: number of tokens to generate
@@ -221,6 +292,165 @@ impl Gpt2Model {
         }
 
         Ok(tokens)
+    }
+
+    /// Create a new KV cache for this model.
+    pub fn new_cache(&self) -> KVCache {
+        let head_dim = self.config.n_embd / self.config.n_head;
+        KVCache::new(self.config.n_layer, self.config.n_head, head_dim)
+    }
+
+    /// Forward pass with KV cache: processes only new tokens.
+    ///
+    /// Returns logits for the new tokens only [new_len, vocab_size].
+    /// The cache is updated in place with new K/V entries.
+    pub fn forward_cached(
+        &self,
+        token_ids: &[u32],
+        cache: &mut KVCache,
+    ) -> Result<Tensor, String> {
+        let new_len = token_ids.len();
+        if new_len == 0 {
+            return Err("Empty input".to_string());
+        }
+        let past_len = cache.len();
+        let total_len = past_len + new_len;
+        if total_len > self.config.n_positions {
+            return Err(format!(
+                "Total sequence length {} exceeds max position {}",
+                total_len, self.config.n_positions
+            ));
+        }
+
+        // Token embeddings for new tokens only
+        let token_emb = embedding_lookup(&self.wte, token_ids)?;
+
+        // Position embeddings for positions past_len..past_len+new_len
+        let positions: Vec<u32> = (past_len as u32..(past_len + new_len) as u32).collect();
+        let pos_emb = embedding_lookup(&self.wpe, &positions)?;
+
+        // x = token_emb + pos_emb [new_len, n_embd]
+        let mut x = ops::elementwise::add(&token_emb, &pos_emb).map_err(err_str)?;
+
+        // Run through transformer layers with cache
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            x = self.forward_layer_cached(layer, &x, &mut cache.layers[layer_idx], past_len)?;
+        }
+
+        // Final layer norm
+        x = layer_norm(&x, &self.ln_f_weight, &self.ln_f_bias, self.config.layer_norm_epsilon)?;
+
+        // LM head: x @ wte.T (tied weights)
+        let wte_t = matrix::transpose(&self.wte);
+        let logits = matrix::matmul(&x, &wte_t)?;
+
+        Ok(logits)
+    }
+
+    /// Generate text with KV caching (fast).
+    ///
+    /// Prefills the prompt in one batch, then generates one token at a time
+    /// using cached key/value projections. Much faster than `generate()`.
+    pub fn generate_cached(
+        &self,
+        token_ids: &[u32],
+        max_new_tokens: usize,
+        temperature: f32,
+    ) -> Result<Vec<u32>, String> {
+        let mut tokens = token_ids.to_vec();
+        let mut cache = self.new_cache();
+
+        // Prefill: process entire prompt at once
+        let logits = self.forward_cached(token_ids, &mut cache)?;
+        let prompt_len = token_ids.len();
+        let last_logits = extract_row(&logits, prompt_len - 1)?;
+
+        let next_token = if temperature <= 0.0 {
+            argmax_f32(&last_logits)
+        } else {
+            sample_with_temperature(&last_logits, temperature)
+        };
+        tokens.push(next_token);
+
+        // Decode: one token at a time
+        for _ in 1..max_new_tokens {
+            let last_token = *tokens.last().unwrap();
+            let logits = self.forward_cached(&[last_token], &mut cache)?;
+            let row_logits = extract_row(&logits, 0)?;
+
+            let next_token = if temperature <= 0.0 {
+                argmax_f32(&row_logits)
+            } else {
+                sample_with_temperature(&row_logits, temperature)
+            };
+            tokens.push(next_token);
+        }
+
+        Ok(tokens)
+    }
+
+    /// Forward pass through a single transformer layer with KV cache.
+    fn forward_layer_cached(
+        &self,
+        layer: &Gpt2Layer,
+        x: &Tensor,
+        layer_cache: &mut LayerKVCache,
+        past_len: usize,
+    ) -> Result<Tensor, String> {
+        let n_embd = self.config.n_embd;
+        let n_head = self.config.n_head;
+        let head_dim = n_embd / n_head;
+        let new_len = x.shape()[0];
+
+        // Pre-attention layer norm
+        let ln1 = layer_norm(x, &layer.ln_1_weight, &layer.ln_1_bias, self.config.layer_norm_epsilon)?;
+
+        // Attention: fused QKV projection for new tokens
+        let qkv = conv1d_forward(&ln1, &layer.c_attn_weight, &layer.c_attn_bias)?;
+
+        // Split into Q, K, V [new_len, n_embd] each
+        let q = slice_columns(&qkv, 0, n_embd)?;
+        let k = slice_columns(&qkv, n_embd, 2 * n_embd)?;
+        let v = slice_columns(&qkv, 2 * n_embd, 3 * n_embd)?;
+
+        // Split new K, V into per-head vectors and append to cache
+        let k_data = k.to_vec_f32();
+        let v_data = v.to_vec_f32();
+        let mut new_k_per_head = vec![Vec::with_capacity(new_len * head_dim); n_head];
+        let mut new_v_per_head = vec![Vec::with_capacity(new_len * head_dim); n_head];
+
+        for pos in 0..new_len {
+            for h in 0..n_head {
+                let offset = pos * n_embd + h * head_dim;
+                new_k_per_head[h].extend_from_slice(&k_data[offset..offset + head_dim]);
+                new_v_per_head[h].extend_from_slice(&v_data[offset..offset + head_dim]);
+            }
+        }
+
+        layer_cache.append(&new_k_per_head, &new_v_per_head, new_len);
+
+        // Compute attention: new Q attends to ALL cached K/V (past + new)
+        let total_len = layer_cache.cached_len;
+        let attn_out = multi_head_attention_cached(
+            &q, layer_cache, n_head, head_dim, new_len, total_len, past_len,
+        )?;
+
+        // Output projection
+        let attn_proj = conv1d_forward(&attn_out, &layer.c_proj_weight, &layer.c_proj_bias)?;
+
+        // Residual connection
+        let x2 = ops::elementwise::add(x, &attn_proj).map_err(err_str)?;
+
+        // Pre-FFN layer norm
+        let ln2 = layer_norm(&x2, &layer.ln_2_weight, &layer.ln_2_bias, self.config.layer_norm_epsilon)?;
+
+        // FFN: fc → gelu → proj
+        let fc = conv1d_forward(&ln2, &layer.mlp_fc_weight, &layer.mlp_fc_bias)?;
+        let activated = gelu_new(&fc)?;
+        let proj = conv1d_forward(&activated, &layer.mlp_proj_weight, &layer.mlp_proj_bias)?;
+
+        // Residual connection
+        ops::elementwise::add(&x2, &proj).map_err(err_str)
     }
 
     /// Number of parameters in the model.
@@ -446,6 +676,77 @@ fn extract_head(data: &[f32], seq_len: usize, n_embd: usize, head: usize, head_d
         }
     }
     head_data
+}
+
+/// Multi-head attention with KV cache.
+///
+/// Q is for new tokens only [new_len, n_embd].
+/// K and V come from the cache [total_len, head_dim] per head.
+/// Causal masking: new position i (at absolute position past_len+i) can attend
+/// to cache positions 0..past_len+i (inclusive).
+#[allow(clippy::needless_range_loop)]
+fn multi_head_attention_cached(
+    q: &Tensor,
+    layer_cache: &LayerKVCache,
+    n_head: usize,
+    head_dim: usize,
+    new_len: usize,
+    _total_len: usize,
+    past_len: usize,
+) -> Result<Tensor, String> {
+    let q_data = q.to_vec_f32();
+    let n_embd = n_head * head_dim;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+
+    let mut output = vec![0.0f32; new_len * n_embd];
+
+    for h in 0..n_head {
+        let cached_k = &layer_cache.keys[h];
+        let cached_v = &layer_cache.values[h];
+
+        for i in 0..new_len {
+            let abs_pos = past_len + i;
+
+            // Q for this position and head
+            let q_offset = i * n_embd + h * head_dim;
+
+            // Compute attention scores: q_i @ cached_K[0..abs_pos+1]^T * scale
+            let attend_len = abs_pos + 1; // causal: attend to positions 0..=abs_pos
+            let mut scores = vec![0.0f32; attend_len];
+
+            for j in 0..attend_len {
+                let mut dot = 0.0f32;
+                let k_offset = j * head_dim;
+                for d in 0..head_dim {
+                    dot += q_data[q_offset + d] * cached_k[k_offset + d];
+                }
+                scores[j] = dot * scale;
+            }
+
+            // Softmax
+            let max_val = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for s in scores.iter_mut() {
+                *s = (*s - max_val).exp();
+                sum += *s;
+            }
+            for s in scores.iter_mut() {
+                *s /= sum;
+            }
+
+            // Weighted sum of values
+            let out_offset = i * n_embd + h * head_dim;
+            for d in 0..head_dim {
+                let mut val = 0.0f32;
+                for j in 0..attend_len {
+                    val += scores[j] * cached_v[j * head_dim + d];
+                }
+                output[out_offset + d] = val;
+            }
+        }
+    }
+
+    Ok(Tensor::from_vec(output, &[new_len, n_embd]))
 }
 
 /// GPT-2's "gelu_new" activation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
@@ -782,5 +1083,212 @@ mod tests {
         let data = result.to_vec_f32();
         assert!((data[0] - 1.0).abs() < 0.01);
         assert!((data[1] - 2.0).abs() < 0.01);
+    }
+
+    // ---- KV Cache Tests ----
+
+    #[test]
+    fn test_kv_cache_new() {
+        let cache = KVCache::new(2, 4, 8);
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+        assert_eq!(cache.layers.len(), 2);
+    }
+
+    #[test]
+    fn test_kv_cache_clear() {
+        let mut cache = KVCache::new(2, 2, 4);
+        // Manually add some data
+        cache.layers[0].keys[0].extend_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        cache.layers[0].values[0].extend_from_slice(&[5.0, 6.0, 7.0, 8.0]);
+        cache.layers[0].cached_len = 1;
+
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.layers[0].keys[0].is_empty());
+    }
+
+    #[test]
+    fn test_layer_kv_cache_append() {
+        let mut lc = LayerKVCache {
+            keys: vec![Vec::new(); 2],
+            values: vec![Vec::new(); 2],
+            cached_len: 0,
+        };
+
+        let new_k = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let new_v = vec![vec![5.0, 6.0], vec![7.0, 8.0]];
+        lc.append(&new_k, &new_v, 1);
+
+        assert_eq!(lc.cached_len, 1);
+        assert_eq!(lc.keys[0], vec![1.0, 2.0]);
+        assert_eq!(lc.keys[1], vec![3.0, 4.0]);
+        assert_eq!(lc.values[0], vec![5.0, 6.0]);
+        assert_eq!(lc.values[1], vec![7.0, 8.0]);
+
+        // Append more
+        let new_k2 = vec![vec![9.0, 10.0], vec![11.0, 12.0]];
+        let new_v2 = vec![vec![13.0, 14.0], vec![15.0, 16.0]];
+        lc.append(&new_k2, &new_v2, 1);
+
+        assert_eq!(lc.cached_len, 2);
+        assert_eq!(lc.keys[0], vec![1.0, 2.0, 9.0, 10.0]);
+    }
+
+    #[test]
+    fn test_forward_cached_matches_forward() {
+        // The critical test: forward_cached with the full prompt should produce
+        // the same logits as forward() for the last token.
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config.clone()).unwrap();
+
+        let tokens = &[0u32, 1, 2, 3];
+
+        // Regular forward
+        let logits_regular = model.forward(tokens).unwrap();
+        let last_regular = extract_row(&logits_regular, tokens.len() - 1).unwrap();
+
+        // Cached forward (single call with all tokens = prefill)
+        let mut cache = model.new_cache();
+        let logits_cached = model.forward_cached(tokens, &mut cache).unwrap();
+        let last_cached = extract_row(&logits_cached, tokens.len() - 1).unwrap();
+
+        // Should match
+        assert_eq!(last_regular.len(), last_cached.len());
+        for (a, b) in last_regular.iter().zip(last_cached.iter()) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "Mismatch: regular={}, cached={}", a, b
+            );
+        }
+    }
+
+    #[test]
+    fn test_forward_cached_incremental_matches_full() {
+        // Process tokens one at a time with cache should match processing all at once
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config.clone()).unwrap();
+
+        let tokens = &[0u32, 1, 2, 3, 4];
+
+        // Full forward
+        let logits_full = model.forward(tokens).unwrap();
+        let last_full = extract_row(&logits_full, tokens.len() - 1).unwrap();
+
+        // Incremental: process first 3, then 2 more
+        let mut cache = model.new_cache();
+        let _ = model.forward_cached(&tokens[0..3], &mut cache).unwrap();
+        let logits_incr = model.forward_cached(&tokens[3..5], &mut cache).unwrap();
+        let last_incr = extract_row(&logits_incr, 1).unwrap(); // second of the 2 new tokens
+
+        assert_eq!(last_full.len(), last_incr.len());
+        for (a, b) in last_full.iter().zip(last_incr.iter()) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "Mismatch: full={}, incremental={}", a, b
+            );
+        }
+    }
+
+    #[test]
+    fn test_forward_cached_single_token_steps() {
+        // Process each token one at a time
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config.clone()).unwrap();
+
+        let tokens = &[0u32, 1, 2];
+
+        // Full forward
+        let logits_full = model.forward(tokens).unwrap();
+        let last_full = extract_row(&logits_full, 2).unwrap();
+
+        // One by one
+        let mut cache = model.new_cache();
+        let _ = model.forward_cached(&[0], &mut cache).unwrap();
+        let _ = model.forward_cached(&[1], &mut cache).unwrap();
+        let logits_last = model.forward_cached(&[2], &mut cache).unwrap();
+        let last_step = extract_row(&logits_last, 0).unwrap();
+
+        for (a, b) in last_full.iter().zip(last_step.iter()) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "Mismatch: full={}, step-by-step={}", a, b
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_cached_matches_generate() {
+        // Greedy generation should produce identical tokens
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config).unwrap();
+
+        let prompt = &[0u32, 1];
+        let regular = model.generate(prompt, 5, 0.0).unwrap();
+        let cached = model.generate_cached(prompt, 5, 0.0).unwrap();
+
+        assert_eq!(regular, cached, "Greedy generation must be identical with and without cache");
+    }
+
+    #[test]
+    fn test_generate_cached_length() {
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config).unwrap();
+
+        let result = model.generate_cached(&[0, 1, 2], 7, 0.0).unwrap();
+        assert_eq!(result.len(), 10); // 3 prompt + 7 generated
+    }
+
+    #[test]
+    fn test_forward_cached_updates_cache_length() {
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config).unwrap();
+
+        let mut cache = model.new_cache();
+        assert_eq!(cache.len(), 0);
+
+        model.forward_cached(&[0, 1, 2], &mut cache).unwrap();
+        assert_eq!(cache.len(), 3);
+
+        model.forward_cached(&[3], &mut cache).unwrap();
+        assert_eq!(cache.len(), 4);
+    }
+
+    #[test]
+    fn test_forward_cached_exceeds_max_position() {
+        let config = make_small_config(); // n_positions = 16
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config).unwrap();
+
+        let mut cache = model.new_cache();
+        // Fill 15 positions
+        let tokens: Vec<u32> = (0..15).map(|i| i % 10).collect();
+        model.forward_cached(&tokens, &mut cache).unwrap();
+
+        // One more is fine (16 total)
+        model.forward_cached(&[0], &mut cache).unwrap();
+        assert_eq!(cache.len(), 16);
+
+        // 17th should fail
+        let result = model.forward_cached(&[0], &mut cache);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kv_cache_model_helper() {
+        let config = make_small_config();
+        let sd = make_small_state_dict(&config);
+        let model = Gpt2Model::from_state_dict(sd, config.clone()).unwrap();
+
+        let cache = model.new_cache();
+        assert_eq!(cache.layers.len(), config.n_layer);
+        assert!(cache.is_empty());
     }
 }
