@@ -40,6 +40,10 @@ name = "cifar10"
 required-features = ["datasets"]
 
 [[example]]
+name = "gpt2"
+required-features = ["datasets"]
+
+[[example]]
 name = "gpt_char"
 
 [[bench]]
