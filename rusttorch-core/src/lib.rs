@@ -7,6 +7,7 @@ pub mod autograd;
 pub mod data;
 pub mod error;
 pub mod memory;
+pub mod nn;
 pub mod ops;
 pub mod tensor;
 pub mod utils;

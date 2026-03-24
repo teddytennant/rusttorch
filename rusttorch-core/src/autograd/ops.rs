@@ -507,3 +507,196 @@ pub fn mul_scalar_forward(input: &Variable, scalar: f32) -> Variable {
         Variable::detach(result)
     }
 }
+
+// ---- Broadcasting add: supports adding tensors of different but broadcastable shapes ----
+// Backward: sum gradients along broadcast dimensions to recover original shape.
+
+struct BroadcastAddBackward {
+    a: Variable,
+    b: Variable,
+    a_shape: Vec<usize>,
+    b_shape: Vec<usize>,
+}
+
+/// Reduce (sum) a tensor's gradient back to the original shape by summing along
+/// dimensions that were broadcast (size 1 in original, size > 1 in output).
+fn reduce_to_shape(grad: &Tensor, original_shape: &[usize], output_shape: &[usize]) -> Tensor {
+    if original_shape == output_shape {
+        return grad.clone();
+    }
+
+    let grad_data = grad.to_vec_f32();
+    let orig_numel: usize = original_shape.iter().product();
+
+    if original_shape.len() == output_shape.len() && output_shape.len() == 2 {
+        let (out_rows, out_cols) = (output_shape[0], output_shape[1]);
+        let (orig_rows, orig_cols) = (original_shape[0], original_shape[1]);
+
+        if orig_rows == 1 && orig_cols == out_cols {
+            // Sum along dim 0: [batch, out] -> [1, out]
+            let mut result = vec![0.0f32; out_cols];
+            for r in 0..out_rows {
+                for c in 0..out_cols {
+                    result[c] += grad_data[r * out_cols + c];
+                }
+            }
+            return Tensor::from_vec(result, original_shape);
+        }
+        if orig_cols == 1 && orig_rows == out_rows {
+            // Sum along dim 1: [batch, out] -> [batch, 1]
+            let mut result = vec![0.0f32; out_rows];
+            for r in 0..out_rows {
+                for c in 0..out_cols {
+                    result[r] += grad_data[r * out_cols + c];
+                }
+            }
+            return Tensor::from_vec(result, original_shape);
+        }
+    }
+
+    // Fallback: repeat elements if sizes match
+    if grad_data.len() == orig_numel {
+        return Tensor::from_vec(grad_data, original_shape);
+    }
+
+    // Generic case: sum to reduce
+    let ratio = grad_data.len() / orig_numel;
+    let mut result = vec![0.0f32; orig_numel];
+    for (i, &v) in grad_data.iter().enumerate() {
+        result[i % orig_numel] += v;
+    }
+    let _ = ratio;
+    Tensor::from_vec(result, original_shape)
+}
+
+impl GradFn for BroadcastAddBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let output_shape = grad_output.shape().to_vec();
+        let grad_a = if self.a.requires_grad() {
+            Some(reduce_to_shape(grad_output, &self.a_shape, &output_shape))
+        } else {
+            None
+        };
+        let grad_b = if self.b.requires_grad() {
+            Some(reduce_to_shape(grad_output, &self.b_shape, &output_shape))
+        } else {
+            None
+        };
+        Ok(vec![grad_a, grad_b])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.a.clone(), self.b.clone()]
+    }
+}
+
+/// Addition with broadcasting support.
+pub fn broadcast_add_forward(a: &Variable, b: &Variable) -> Result<Variable> {
+    let a_tensor = a.tensor();
+    let b_tensor = b.tensor();
+
+    // If same shape, use regular add (faster path)
+    if a_tensor.shape() == b_tensor.shape() {
+        return add_forward(a, b);
+    }
+
+    // Broadcast add using ndarray
+    let a_data = a_tensor.to_vec_f32();
+    let b_data = b_tensor.to_vec_f32();
+    let a_shape = a_tensor.shape();
+    let b_shape = b_tensor.shape();
+
+    let result_shape = crate::ops::broadcast_shape(a_shape, b_shape)?;
+
+    let a_arr = ndarray::Array::from_shape_vec(ndarray::IxDyn(a_shape), a_data).map_err(|e| {
+        TensorError::Other {
+            message: format!("broadcast add reshape a: {}", e),
+        }
+    })?;
+
+    let b_arr = ndarray::Array::from_shape_vec(ndarray::IxDyn(b_shape), b_data).map_err(|e| {
+        TensorError::Other {
+            message: format!("broadcast add reshape b: {}", e),
+        }
+    })?;
+
+    let a_broadcast = a_arr
+        .broadcast(ndarray::IxDyn(&result_shape))
+        .ok_or_else(|| TensorError::BroadcastError {
+            shape_a: a_shape.to_vec(),
+            shape_b: b_shape.to_vec(),
+            reason: "ndarray broadcast failed".to_string(),
+        })?;
+
+    let b_broadcast = b_arr
+        .broadcast(ndarray::IxDyn(&result_shape))
+        .ok_or_else(|| TensorError::BroadcastError {
+            shape_a: a_shape.to_vec(),
+            shape_b: b_shape.to_vec(),
+            reason: "ndarray broadcast failed".to_string(),
+        })?;
+
+    let result_data: Vec<f32> = a_broadcast
+        .iter()
+        .zip(b_broadcast.iter())
+        .map(|(&x, &y)| x + y)
+        .collect();
+    let result = Tensor::from_vec(result_data, &result_shape);
+
+    if a.requires_grad() || b.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(BroadcastAddBackward {
+                a: a.clone(),
+                b: b.clone(),
+                a_shape: a_shape.to_vec(),
+                b_shape: b_shape.to_vec(),
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Transpose: d(x^T)/dx = grad^T ----
+
+struct TransposeBackward {
+    input: Variable,
+}
+
+impl GradFn for TransposeBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+        let grad = crate::ops::matrix::transpose(grad_output);
+        Ok(vec![Some(grad)])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// Transpose a 2D variable while preserving the computation graph.
+pub fn transpose_forward(input: &Variable) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape();
+    if shape.len() != 2 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "tensor".to_string(),
+            reason: format!("transpose requires 2D tensor, got {}D", shape.len()),
+        });
+    }
+    let result = crate::ops::matrix::transpose(&tensor);
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(TransposeBackward {
+                input: input.clone(),
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
