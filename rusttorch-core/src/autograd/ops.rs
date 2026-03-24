@@ -1599,3 +1599,258 @@ pub fn cross_entropy_loss_forward(input: &Variable, target: &Variable) -> Result
     let elementwise = neg_log_probs.mul(target)?;
     elementwise.mean()
 }
+
+// ---- Average Pooling 2D ----
+
+struct AvgPool2dSavedState {
+    input: Variable,
+    input_shape: Vec<usize>,
+    kernel_size: usize,
+    stride: usize,
+    output_h: usize,
+    output_w: usize,
+}
+
+impl GradFn for AvgPool2dSavedState {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+
+        let grad_data = grad_output.to_vec_f32();
+        let numel: usize = self.input_shape.iter().product();
+        let mut grad_input = vec![0.0f32; numel];
+
+        let b = self.input_shape[0];
+        let c = self.input_shape[1];
+        let ih = self.input_shape[2];
+        let iw = self.input_shape[3];
+        let oh = self.output_h;
+        let ow = self.output_w;
+        let k = self.kernel_size;
+        let pool_size = (k * k) as f32;
+
+        // Each output gradient is distributed equally to all input positions in its window
+        for bi in 0..b {
+            for ci in 0..c {
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let out_idx = bi * c * oh * ow + ci * oh * ow + oy * ow + ox;
+                        let grad_val = grad_data[out_idx] / pool_size;
+                        for ky in 0..k {
+                            for kx in 0..k {
+                                let iy = oy * self.stride + ky;
+                                let ix = ox * self.stride + kx;
+                                if iy < ih && ix < iw {
+                                    let in_idx = bi * c * ih * iw + ci * ih * iw + iy * iw + ix;
+                                    grad_input[in_idx] += grad_val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(vec![Some(Tensor::from_vec(grad_input, &self.input_shape))])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// AvgPool2d forward pass.
+/// input: [B, C, H, W], output: [B, C, oH, oW]
+pub fn avg_pool2d_forward(input: &Variable, kernel_size: usize, stride: usize) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape().to_vec();
+    if shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "avg_pool2d requires 4D input [B,C,H,W], got {}D",
+                shape.len()
+            ),
+        });
+    }
+
+    let batch = shape[0];
+    let channels = shape[1];
+    let ih = shape[2];
+    let iw = shape[3];
+    let oh = (ih - kernel_size) / stride + 1;
+    let ow = (iw - kernel_size) / stride + 1;
+
+    let data = tensor.to_vec_f32();
+    let mut output = vec![0.0f32; batch * channels * oh * ow];
+    let pool_size = (kernel_size * kernel_size) as f32;
+
+    for bi in 0..batch {
+        for ci in 0..channels {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let mut sum = 0.0f32;
+                    for ky in 0..kernel_size {
+                        for kx in 0..kernel_size {
+                            let iy = oy * stride + ky;
+                            let ix = ox * stride + kx;
+                            let idx = bi * channels * ih * iw + ci * ih * iw + iy * iw + ix;
+                            sum += data[idx];
+                        }
+                    }
+                    let out_idx = bi * channels * oh * ow + ci * oh * ow + oy * ow + ox;
+                    output[out_idx] = sum / pool_size;
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &[batch, channels, oh, ow]);
+
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(AvgPool2dSavedState {
+                input: input.clone(),
+                input_shape: shape,
+                kernel_size,
+                stride,
+                output_h: oh,
+                output_w: ow,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Adaptive Average Pooling 2D ----
+
+struct AdaptiveAvgPool2dSavedState {
+    input: Variable,
+    input_shape: Vec<usize>,
+    output_h: usize,
+    output_w: usize,
+}
+
+impl GradFn for AdaptiveAvgPool2dSavedState {
+    #[allow(clippy::needless_range_loop)]
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+
+        let grad_data = grad_output.to_vec_f32();
+        let numel: usize = self.input_shape.iter().product();
+        let mut grad_input = vec![0.0f32; numel];
+
+        let b = self.input_shape[0];
+        let c = self.input_shape[1];
+        let ih = self.input_shape[2];
+        let iw = self.input_shape[3];
+        let oh = self.output_h;
+        let ow = self.output_w;
+
+        for bi in 0..b {
+            for ci in 0..c {
+                for oy in 0..oh {
+                    let y_start = (oy * ih) / oh;
+                    let y_end = ((oy + 1) * ih) / oh;
+                    for ox in 0..ow {
+                        let x_start = (ox * iw) / ow;
+                        let x_end = ((ox + 1) * iw) / ow;
+                        let pool_size = ((y_end - y_start) * (x_end - x_start)) as f32;
+                        let out_idx = bi * c * oh * ow + ci * oh * ow + oy * ow + ox;
+                        let grad_val = grad_data[out_idx] / pool_size;
+
+                        for iy in y_start..y_end {
+                            for ix in x_start..x_end {
+                                let in_idx = bi * c * ih * iw + ci * ih * iw + iy * iw + ix;
+                                grad_input[in_idx] += grad_val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(vec![Some(Tensor::from_vec(grad_input, &self.input_shape))])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// AdaptiveAvgPool2d forward pass.
+/// Maps any spatial size to the target (output_h, output_w).
+/// input: [B, C, H, W], output: [B, C, output_h, output_w]
+pub fn adaptive_avg_pool2d_forward(
+    input: &Variable,
+    output_h: usize,
+    output_w: usize,
+) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape().to_vec();
+    if shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "adaptive_avg_pool2d requires 4D input [B,C,H,W], got {}D",
+                shape.len()
+            ),
+        });
+    }
+
+    let batch = shape[0];
+    let channels = shape[1];
+    let ih = shape[2];
+    let iw = shape[3];
+
+    let data = tensor.to_vec_f32();
+    let mut output = vec![0.0f32; batch * channels * output_h * output_w];
+
+    for bi in 0..batch {
+        for ci in 0..channels {
+            for oy in 0..output_h {
+                let y_start = (oy * ih) / output_h;
+                let y_end = ((oy + 1) * ih) / output_h;
+                for ox in 0..output_w {
+                    let x_start = (ox * iw) / output_w;
+                    let x_end = ((ox + 1) * iw) / output_w;
+                    let pool_size = ((y_end - y_start) * (x_end - x_start)) as f32;
+
+                    let mut sum = 0.0f32;
+                    for iy in y_start..y_end {
+                        for ix in x_start..x_end {
+                            let idx = bi * channels * ih * iw + ci * ih * iw + iy * iw + ix;
+                            sum += data[idx];
+                        }
+                    }
+                    let out_idx = bi * channels * output_h * output_w
+                        + ci * output_h * output_w
+                        + oy * output_w
+                        + ox;
+                    output[out_idx] = sum / pool_size;
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &[batch, channels, output_h, output_w]);
+
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(AdaptiveAvgPool2dSavedState {
+                input: input.clone(),
+                input_shape: shape,
+                output_h,
+                output_w,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}

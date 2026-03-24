@@ -1898,3 +1898,549 @@ fn maxpool_empty_state_dict() {
     let pool = MaxPool2d::new(2);
     assert!(pool.state_dict().is_empty());
 }
+
+// ---- AvgPool2d tests ----
+
+#[test]
+fn avgpool2d_output_shape() {
+    let pool = AvgPool2d::new(2);
+    // [1, 1, 4, 4] -> kernel=2, stride=2 -> [1, 1, 2, 2]
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 16], &[1, 1, 4, 4]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 2, 2]);
+}
+
+#[test]
+fn avgpool2d_computes_average() {
+    let pool = AvgPool2d::new(2);
+    // 2x2 input with known values
+    // [[1, 2], [3, 4]] -> avg = 2.5
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]),
+        false,
+    );
+    let output = pool.forward(&input).unwrap();
+    let data = output.tensor().to_vec_f32();
+    assert_eq!(data.len(), 1);
+    assert!((data[0] - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn avgpool2d_multi_channel() {
+    let pool = AvgPool2d::new(2);
+    // [1, 2, 4, 4] -> [1, 2, 2, 2]
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 32], &[1, 2, 4, 4]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 2, 2, 2]);
+    // All ones -> average = 1.0
+    for v in output.tensor().to_vec_f32() {
+        assert!((v - 1.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn avgpool2d_with_stride() {
+    let pool = AvgPool2d::with_stride(3, 1);
+    // [1, 1, 5, 5] -> kernel=3, stride=1 -> [1, 1, 3, 3]
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 25], &[1, 1, 5, 5]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 3, 3]);
+}
+
+#[test]
+fn avgpool2d_backward_gradient_exists() {
+    let pool = AvgPool2d::new(2);
+    let input = Variable::new(
+        Tensor::from_vec(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[1, 1, 3, 3],
+        ),
+        true,
+    );
+    let output = pool.forward(&input).unwrap();
+    // output is [1, 1, 1, 1]
+    assert_eq!(output.shape(), vec![1, 1, 1, 1]);
+    output.backward().unwrap();
+    let grad = input.grad().expect("should have gradient");
+    assert_eq!(grad.shape(), &[1, 1, 3, 3]);
+}
+
+#[test]
+fn avgpool2d_backward_distributes_equally() {
+    let pool = AvgPool2d::new(2);
+    // [1, 1, 2, 2] -> [1, 1, 1, 1], average of 4 elements
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]),
+        true,
+    );
+    let output = pool.forward(&input).unwrap();
+    output.backward().unwrap();
+    let grad = input.grad().unwrap().to_vec_f32();
+    // Each input should receive grad_output / pool_size = 1.0 / 4.0 = 0.25
+    for &g in &grad {
+        assert!((g - 0.25).abs() < 1e-6, "Expected 0.25, got {}", g);
+    }
+}
+
+#[test]
+fn avgpool2d_numerical_gradient_check() {
+    let pool = AvgPool2d::new(2);
+    let eps = 1e-3;
+    // Use small values to minimize f32 precision issues
+    let input_data: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1).collect();
+    let input = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 4, 4]), true);
+    let output = pool.forward(&input).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+    let analytic_grad = input.grad().unwrap().to_vec_f32();
+
+    for i in 0..input_data.len() {
+        let mut plus = input_data.clone();
+        plus[i] += eps;
+        let inp_p = Variable::new(Tensor::from_vec(plus, &[1, 1, 4, 4]), false);
+        let out_p = pool.forward(&inp_p).unwrap();
+        let loss_p = out_p.tensor().to_vec_f32().iter().sum::<f32>();
+
+        let mut minus = input_data.clone();
+        minus[i] -= eps;
+        let inp_m = Variable::new(Tensor::from_vec(minus, &[1, 1, 4, 4]), false);
+        let out_m = pool.forward(&inp_m).unwrap();
+        let loss_m = out_m.tensor().to_vec_f32().iter().sum::<f32>();
+
+        let numerical = (loss_p - loss_m) / (2.0 * eps);
+        assert!(
+            (analytic_grad[i] - numerical).abs() < 0.05,
+            "Gradient mismatch at {}: analytic={}, numerical={}",
+            i,
+            analytic_grad[i],
+            numerical
+        );
+    }
+}
+
+#[test]
+fn avgpool2d_no_parameters() {
+    let pool = AvgPool2d::new(2);
+    assert!(pool.parameters().is_empty());
+    assert_eq!(pool.num_parameters(), 0);
+}
+
+#[test]
+fn avgpool2d_empty_state_dict() {
+    let pool = AvgPool2d::new(2);
+    assert!(pool.state_dict().is_empty());
+}
+
+#[test]
+fn avgpool2d_debug_format() {
+    let pool = AvgPool2d::with_stride(3, 2);
+    let debug = format!("{:?}", pool);
+    assert!(debug.contains("AvgPool2d"));
+    assert!(debug.contains("kernel_size=3"));
+    assert!(debug.contains("stride=2"));
+}
+
+// ---- AdaptiveAvgPool2d tests ----
+
+#[test]
+fn adaptive_avgpool2d_output_shape() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    // [2, 3, 7, 7] -> [2, 3, 1, 1] (global average pooling)
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0; 2 * 3 * 7 * 7], &[2, 3, 7, 7]),
+        false,
+    );
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![2, 3, 1, 1]);
+}
+
+#[test]
+fn adaptive_avgpool2d_global_average() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    // [1, 1, 2, 2] with values [1, 2, 3, 4] -> global avg = 2.5
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]),
+        false,
+    );
+    let output = pool.forward(&input).unwrap();
+    let data = output.tensor().to_vec_f32();
+    assert_eq!(data.len(), 1);
+    assert!((data[0] - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn adaptive_avgpool2d_identity() {
+    // Target size equals input size -> identity
+    let pool = AdaptiveAvgPool2d::new(4);
+    let input_data: Vec<f32> = (1..=16).map(|x| x as f32).collect();
+    let input = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 4, 4]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 4, 4]);
+    let out_data = output.tensor().to_vec_f32();
+    for (a, b) in input_data.iter().zip(out_data.iter()) {
+        assert!((a - b).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn adaptive_avgpool2d_downsample_2x2() {
+    let pool = AdaptiveAvgPool2d::new(2);
+    // [1, 1, 4, 4] -> [1, 1, 2, 2]
+    // Partitions: top-left 2x2, top-right 2x2, bottom-left 2x2, bottom-right 2x2
+    let input_data: Vec<f32> = (1..=16).map(|x| x as f32).collect();
+    let input = Variable::new(Tensor::from_vec(input_data, &[1, 1, 4, 4]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 2, 2]);
+    let data = output.tensor().to_vec_f32();
+    // Top-left quadrant: (1+2+5+6)/4 = 3.5
+    assert!((data[0] - 3.5).abs() < 1e-6, "got {}", data[0]);
+    // Top-right quadrant: (3+4+7+8)/4 = 5.5
+    assert!((data[1] - 5.5).abs() < 1e-6, "got {}", data[1]);
+    // Bottom-left: (9+10+13+14)/4 = 11.5
+    assert!((data[2] - 11.5).abs() < 1e-6, "got {}", data[2]);
+    // Bottom-right: (11+12+15+16)/4 = 13.5
+    assert!((data[3] - 13.5).abs() < 1e-6, "got {}", data[3]);
+}
+
+#[test]
+fn adaptive_avgpool2d_backward_gradient_exists() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 12], &[1, 1, 3, 4]), true);
+    let output = pool.forward(&input).unwrap();
+    // output is [1, 1, 1, 1] scalar
+    output.backward().unwrap();
+    let grad = input.grad().expect("should have gradient");
+    assert_eq!(grad.shape(), &[1, 1, 3, 4]);
+}
+
+#[test]
+fn adaptive_avgpool2d_backward_distributes_equally() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    // Global avg pool over [1, 1, 3, 3] = 9 elements
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 9], &[1, 1, 3, 3]), true);
+    let output = pool.forward(&input).unwrap();
+    output.backward().unwrap();
+    let grad = input.grad().unwrap().to_vec_f32();
+    let expected = 1.0 / 9.0;
+    for &g in &grad {
+        assert!(
+            (g - expected).abs() < 1e-6,
+            "Expected {}, got {}",
+            expected,
+            g
+        );
+    }
+}
+
+#[test]
+fn adaptive_avgpool2d_numerical_gradient_check() {
+    let pool = AdaptiveAvgPool2d::new(2);
+    let eps = 1e-4;
+    let input_data: Vec<f32> = (1..=36).map(|x| x as f32 * 0.1).collect();
+    let input = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 6, 6]), true);
+    let output = pool.forward(&input).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+    let analytic_grad = input.grad().unwrap().to_vec_f32();
+
+    for i in 0..input_data.len() {
+        let mut plus = input_data.clone();
+        plus[i] += eps;
+        let inp_p = Variable::new(Tensor::from_vec(plus, &[1, 1, 6, 6]), false);
+        let out_p = pool.forward(&inp_p).unwrap();
+        let loss_p = out_p.tensor().to_vec_f32().iter().sum::<f32>();
+
+        let mut minus = input_data.clone();
+        minus[i] -= eps;
+        let inp_m = Variable::new(Tensor::from_vec(minus, &[1, 1, 6, 6]), false);
+        let out_m = pool.forward(&inp_m).unwrap();
+        let loss_m = out_m.tensor().to_vec_f32().iter().sum::<f32>();
+
+        let numerical = (loss_p - loss_m) / (2.0 * eps);
+        assert!(
+            (analytic_grad[i] - numerical).abs() < 0.01,
+            "Gradient mismatch at {}: analytic={}, numerical={}",
+            i,
+            analytic_grad[i],
+            numerical
+        );
+    }
+}
+
+#[test]
+fn adaptive_avgpool2d_rect_output() {
+    let pool = AdaptiveAvgPool2d::new_rect(2, 3);
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 36], &[1, 1, 6, 6]), false);
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 2, 3]);
+}
+
+#[test]
+fn adaptive_avgpool2d_no_parameters() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    assert!(pool.parameters().is_empty());
+}
+
+#[test]
+fn adaptive_avgpool2d_empty_state_dict() {
+    let pool = AdaptiveAvgPool2d::new(1);
+    assert!(pool.state_dict().is_empty());
+}
+
+#[test]
+fn adaptive_avgpool2d_debug_format() {
+    let pool = AdaptiveAvgPool2d::new_rect(2, 3);
+    let debug = format!("{:?}", pool);
+    assert!(debug.contains("AdaptiveAvgPool2d"));
+    assert!(debug.contains("(2, 3)"));
+}
+
+// ---- ResidualBlock tests ----
+
+#[test]
+fn residual_block_output_shape_same_channels() {
+    let block = ResidualBlock::new(8, 8, 1);
+    block.train();
+    // [1, 8, 8, 8] -> same shape since stride=1 and channels match
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 8 * 8 * 8], &[1, 8, 8, 8]),
+        false,
+    );
+    let output = block.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 8, 8, 8]);
+}
+
+#[test]
+fn residual_block_output_shape_channel_change() {
+    let block = ResidualBlock::new(4, 8, 1);
+    block.train();
+    // [1, 4, 8, 8] -> [1, 8, 8, 8] (channels double, spatial same)
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 4 * 8 * 8], &[1, 4, 8, 8]),
+        false,
+    );
+    let output = block.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 8, 8, 8]);
+}
+
+#[test]
+fn residual_block_output_shape_downsample() {
+    let block = ResidualBlock::new(4, 8, 2);
+    block.train();
+    // [1, 4, 8, 8] -> stride=2, channels 4->8 -> [1, 8, 4, 4]
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 4 * 8 * 8], &[1, 4, 8, 8]),
+        false,
+    );
+    let output = block.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 8, 4, 4]);
+}
+
+#[test]
+fn residual_block_has_parameters() {
+    let block = ResidualBlock::new(4, 8, 1);
+    // conv1 (4*8*3*3 + 8) + bn1 (8+8) + conv2 (8*8*3*3 + 8) + bn2 (8+8) + downsample_conv (4*8*1*1 + 8) + downsample_bn (8+8)
+    let params = block.parameters();
+    assert!(!params.is_empty());
+    // Should have params from all sublayers
+    let total = block.num_parameters();
+    assert!(total > 0);
+}
+
+#[test]
+fn residual_block_no_downsample_when_same() {
+    let block = ResidualBlock::new(8, 8, 1);
+    // Same channels, stride=1 -> no downsample conv
+    // Should have: conv1 weight+bias, bn1 weight+bias, conv2 weight+bias, bn2 weight+bias = 8 params
+    let params = block.parameters();
+    assert_eq!(params.len(), 8);
+}
+
+#[test]
+fn residual_block_has_downsample_when_different() {
+    let block = ResidualBlock::new(4, 8, 2);
+    // Different channels AND stride -> downsample conv+bn adds 4 params (weight+bias+weight+bias)
+    // Total: 8 (main path) + 4 (downsample) = 12
+    let params = block.parameters();
+    assert_eq!(params.len(), 12);
+}
+
+#[test]
+fn residual_block_backward_gradients_flow() {
+    let block = ResidualBlock::new(2, 2, 1);
+    block.train();
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 2 * 4 * 4], &[1, 2, 4, 4]),
+        true,
+    );
+    let output = block.forward(&input).unwrap();
+    let loss = output.mean().unwrap();
+    loss.backward().unwrap();
+
+    // Input should have gradients (through both skip and main path)
+    assert!(input.grad().is_some(), "Input should have gradient");
+
+    // All parameters should have gradients
+    for (i, param) in block.parameters().iter().enumerate() {
+        assert!(
+            param.var().grad().is_some(),
+            "Parameter {} should have gradient",
+            i
+        );
+    }
+}
+
+#[test]
+fn residual_block_backward_with_downsample() {
+    let block = ResidualBlock::new(2, 4, 2);
+    block.train();
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 2 * 8 * 8], &[1, 2, 8, 8]),
+        true,
+    );
+    let output = block.forward(&input).unwrap();
+    // Should be [1, 4, 4, 4]
+    assert_eq!(output.shape(), vec![1, 4, 4, 4]);
+
+    let loss = output.mean().unwrap();
+    loss.backward().unwrap();
+
+    assert!(
+        input.grad().is_some(),
+        "Input should have gradient through downsample path"
+    );
+    for (i, param) in block.parameters().iter().enumerate() {
+        assert!(
+            param.var().grad().is_some(),
+            "Parameter {} should have gradient",
+            i
+        );
+    }
+}
+
+#[test]
+fn residual_block_state_dict_keys() {
+    let block = ResidualBlock::new(4, 8, 2);
+    let sd = block.state_dict();
+    let keys = sd.keys();
+
+    // Main path keys
+    assert!(keys.contains(&"conv1.weight".to_string()));
+    assert!(keys.contains(&"conv1.bias".to_string()));
+    assert!(keys.contains(&"bn1.weight".to_string()));
+    assert!(keys.contains(&"bn1.bias".to_string()));
+    assert!(keys.contains(&"conv2.weight".to_string()));
+    assert!(keys.contains(&"conv2.bias".to_string()));
+    assert!(keys.contains(&"bn2.weight".to_string()));
+    assert!(keys.contains(&"bn2.bias".to_string()));
+
+    // Downsample path keys
+    assert!(keys.contains(&"downsample.0.weight".to_string()));
+    assert!(keys.contains(&"downsample.0.bias".to_string()));
+    assert!(keys.contains(&"downsample.1.weight".to_string()));
+    assert!(keys.contains(&"downsample.1.bias".to_string()));
+}
+
+#[test]
+fn residual_block_state_dict_roundtrip() {
+    let block1 = ResidualBlock::new(4, 8, 2);
+    let sd = block1.state_dict();
+
+    let block2 = ResidualBlock::new(4, 8, 2);
+    block2.load_state_dict(&sd);
+    let sd2 = block2.state_dict();
+
+    // All tensors should match
+    for key in sd.keys() {
+        let t1 = sd.get(&key).unwrap().to_vec_f32();
+        let t2 = sd2.get(&key).unwrap().to_vec_f32();
+        for (a, b) in t1.iter().zip(t2.iter()) {
+            assert!((a - b).abs() < 1e-6, "Mismatch in {}", key);
+        }
+    }
+}
+
+#[test]
+fn residual_block_train_eval_mode() {
+    let block = ResidualBlock::new(4, 4, 1);
+
+    // Start in train mode
+    block.train();
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 4 * 4 * 4], &[1, 4, 4, 4]),
+        false,
+    );
+    let out_train = block.forward(&input).unwrap();
+
+    // Switch to eval
+    block.eval();
+    let out_eval = block.forward(&input).unwrap();
+
+    // Outputs should differ (batchnorm behaves differently)
+    let train_data = out_train.tensor().to_vec_f32();
+    let eval_data = out_eval.tensor().to_vec_f32();
+    let diff: f32 = train_data
+        .iter()
+        .zip(eval_data.iter())
+        .map(|(a, b)| (a - b).abs())
+        .sum();
+    // After one forward pass, running stats differ from batch stats
+    assert!(diff > 0.0, "Train and eval outputs should differ");
+}
+
+#[test]
+fn residual_block_debug_format() {
+    let block = ResidualBlock::new(4, 8, 2);
+    let debug = format!("{:?}", block);
+    assert!(debug.contains("ResidualBlock"));
+    assert!(debug.contains("stride=2"));
+    assert!(debug.contains("downsample=true"));
+}
+
+// ---- Skip connection gradient flow proof ----
+
+#[test]
+fn skip_connection_gradient_flows_through_both_paths() {
+    // This is THE test that proves the autograd system handles skip connections.
+    // y = relu(x + F(x)) where F is a simple linear transform.
+    // Gradients must flow through BOTH the identity path and the transform path.
+
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 4]), true);
+
+    // Simulate F(x) = W @ x (a simple linear transform, no bias)
+    let w_data = vec![
+        0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1,
+    ];
+    let w = Variable::new(Tensor::from_vec(w_data, &[4, 4]), true);
+
+    // F(x) = x @ W^T
+    let fx = x.matmul(&w.t().unwrap()).unwrap();
+
+    // Skip connection: y = x + F(x)
+    let y = x.add(&fx).unwrap();
+
+    // Loss = sum(y)
+    let loss = y.sum().unwrap();
+    loss.backward().unwrap();
+
+    let x_grad = x.grad().expect("x should have gradient");
+    let x_grad_data = x_grad.to_vec_f32();
+
+    // Gradient through identity path: d(x)/dx = I -> contributes [1, 1, 1, 1]
+    // Gradient through F path: d(W@x)/dx = W -> contributes W^T columns
+    // Total: [1, 1, 1, 1] + W^T @ [1, 1, 1, 1]
+    // With W = 0.1*I, this is [1, 1, 1, 1] + [0.1, 0.1, 0.1, 0.1] = [1.1, 1.1, 1.1, 1.1]
+    for &g in &x_grad_data {
+        assert!(
+            (g - 1.1).abs() < 1e-4,
+            "Expected ~1.1 (identity + transform), got {}",
+            g
+        );
+    }
+
+    // W should also have gradients
+    assert!(
+        w.grad().is_some(),
+        "W should have gradient through F(x) path"
+    );
+}
