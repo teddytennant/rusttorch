@@ -2076,3 +2076,555 @@ mod im2col_tests {
         assert_eq!(restored.len(), 4);
     }
 }
+
+// ---- Layer Normalization ----
+// Normalizes over the last `normalized_shape` dimensions.
+// Forward: y = (x - mean) / sqrt(var + eps) * weight + bias
+// Backward: uses saved x_norm and inv_std
+
+struct LayerNormBackward {
+    input: Variable,
+    weight: Option<Variable>,
+    bias: Option<Variable>,
+    x_norm: Tensor,         // normalized input (before scale+shift)
+    inv_std: Tensor,        // 1/sqrt(var+eps), shape = leading dims
+    normalized_size: usize, // product of normalized dimensions
+}
+
+impl GradFn for LayerNormBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let go = grad_output.to_vec_f32();
+        let shape = grad_output.shape();
+        let x_norm = self.x_norm.to_vec_f32();
+        let inv_std = self.inv_std.to_vec_f32();
+        let n = self.normalized_size;
+        let n_f = n as f32;
+        let num_instances = go.len() / n;
+
+        // grad_weight = sum(grad_output * x_norm) over all instances
+        let grad_weight = if self.weight.as_ref().is_some_and(|w| w.requires_grad()) {
+            let mut gw = vec![0.0f32; n];
+            for i in 0..num_instances {
+                for j in 0..n {
+                    gw[j] += go[i * n + j] * x_norm[i * n + j];
+                }
+            }
+            Some(Tensor::from_vec(gw, &[n]))
+        } else {
+            None
+        };
+
+        // grad_bias = sum(grad_output) over all instances
+        let grad_bias = if self.bias.as_ref().is_some_and(|b| b.requires_grad()) {
+            let mut gb = vec![0.0f32; n];
+            for i in 0..num_instances {
+                for j in 0..n {
+                    gb[j] += go[i * n + j];
+                }
+            }
+            Some(Tensor::from_vec(gb, &[n]))
+        } else {
+            None
+        };
+
+        // grad_input
+        let grad_input = if self.input.requires_grad() {
+            // Scale grad_output by weight if present
+            let weight_data = self.weight.as_ref().map(|w| w.tensor().to_vec_f32());
+            let mut dx = vec![0.0f32; go.len()];
+
+            for (i, &is) in inv_std.iter().enumerate().take(num_instances) {
+                let off = i * n;
+
+                // Apply weight scaling to grad_output
+                let mut go_scaled = vec![0.0f32; n];
+                for j in 0..n {
+                    go_scaled[j] = match &weight_data {
+                        Some(w) => go[off + j] * w[j],
+                        None => go[off + j],
+                    };
+                }
+
+                // dx_norm = go_scaled
+                // sum1 = sum(dx_norm)
+                // sum2 = sum(dx_norm * x_norm)
+                let mut sum1 = 0.0f32;
+                let mut sum2 = 0.0f32;
+                for j in 0..n {
+                    sum1 += go_scaled[j];
+                    sum2 += go_scaled[j] * x_norm[off + j];
+                }
+
+                // grad_input = inv_std/n * (n*dx_norm - sum1 - x_norm*sum2)
+                for j in 0..n {
+                    dx[off + j] = is / n_f * (n_f * go_scaled[j] - sum1 - x_norm[off + j] * sum2);
+                }
+            }
+            Some(Tensor::from_vec(dx, shape))
+        } else {
+            None
+        };
+
+        // inputs order: input, weight (optional), bias (optional)
+        let mut grads = vec![grad_input];
+        if self.weight.is_some() {
+            grads.push(grad_weight);
+        }
+        if self.bias.is_some() {
+            grads.push(grad_bias);
+        }
+        Ok(grads)
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        let mut inputs = vec![self.input.clone()];
+        if let Some(ref w) = self.weight {
+            inputs.push(w.clone());
+        }
+        if let Some(ref b) = self.bias {
+            inputs.push(b.clone());
+        }
+        inputs
+    }
+}
+
+/// Layer normalization forward pass.
+/// Input: any shape. Normalizes over the last `norm_size` elements.
+/// weight/bias: optional affine parameters of shape [norm_size]
+pub fn layer_norm_forward(
+    input: &Variable,
+    norm_size: usize,
+    weight: Option<&Variable>,
+    bias: Option<&Variable>,
+    eps: f32,
+) -> Result<Variable> {
+    let tensor = input.tensor();
+    let data = tensor.to_vec_f32();
+    let shape = tensor.shape().to_vec();
+    let total = data.len();
+
+    if !total.is_multiple_of(norm_size) {
+        return Err(TensorError::InvalidArgument {
+            parameter: "norm_size".to_string(),
+            reason: format!(
+                "tensor size {} not divisible by norm_size {}",
+                total, norm_size
+            ),
+        });
+    }
+
+    let num_instances = total / norm_size;
+    let mut output = vec![0.0f32; total];
+    let mut x_norm = vec![0.0f32; total];
+    let mut inv_std_vec = vec![0.0f32; num_instances];
+
+    let weight_data = weight.map(|w| w.tensor().to_vec_f32());
+    let bias_data = bias.map(|b| b.tensor().to_vec_f32());
+
+    for (i, inv_std_val) in inv_std_vec.iter_mut().enumerate().take(num_instances) {
+        let off = i * norm_size;
+
+        // Compute mean
+        let mut mean = 0.0f32;
+        for j in 0..norm_size {
+            mean += data[off + j];
+        }
+        mean /= norm_size as f32;
+
+        // Compute variance
+        let mut var = 0.0f32;
+        for j in 0..norm_size {
+            let d = data[off + j] - mean;
+            var += d * d;
+        }
+        var /= norm_size as f32;
+
+        let inv_s = 1.0 / (var + eps).sqrt();
+        *inv_std_val = inv_s;
+
+        // Normalize
+        for j in 0..norm_size {
+            let normalized = (data[off + j] - mean) * inv_s;
+            x_norm[off + j] = normalized;
+
+            // Apply affine transform
+            let val = match (&weight_data, &bias_data) {
+                (Some(w), Some(b)) => normalized * w[j] + b[j],
+                (Some(w), None) => normalized * w[j],
+                (None, Some(b)) => normalized + b[j],
+                (None, None) => normalized,
+            };
+            output[off + j] = val;
+        }
+    }
+
+    let result = Tensor::from_vec(output, &shape);
+    let x_norm_tensor = Tensor::from_vec(x_norm, &shape);
+    let inv_std_tensor = Tensor::from_vec(inv_std_vec, &[num_instances]);
+
+    let needs_grad = input.requires_grad()
+        || weight.is_some_and(|w| w.requires_grad())
+        || bias.is_some_and(|b| b.requires_grad());
+
+    if needs_grad {
+        Ok(Variable::from_op(
+            result,
+            Box::new(LayerNormBackward {
+                input: input.clone(),
+                weight: weight.cloned(),
+                bias: bias.cloned(),
+                x_norm: x_norm_tensor,
+                inv_std: inv_std_tensor,
+                normalized_size: norm_size,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Embedding lookup ----
+// Forward: index into weight matrix
+// Backward: scatter-add gradients to weight rows
+
+struct EmbeddingBackward {
+    weight: Variable,
+    indices: Vec<usize>,
+    num_embeddings: usize,
+}
+
+impl GradFn for EmbeddingBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let go = grad_output.to_vec_f32();
+        let go_shape = grad_output.shape();
+        let embedding_dim = go_shape[go_shape.len() - 1];
+
+        // Scatter-add: grad_weight[idx] += grad_output[i]
+        let mut grad_weight = vec![0.0f32; self.num_embeddings * embedding_dim];
+        for (i, &idx) in self.indices.iter().enumerate() {
+            let go_off = i * embedding_dim;
+            let gw_off = idx * embedding_dim;
+            for j in 0..embedding_dim {
+                grad_weight[gw_off + j] += go[go_off + j];
+            }
+        }
+
+        let grad_w = if self.weight.requires_grad() {
+            Some(Tensor::from_vec(
+                grad_weight,
+                &[self.num_embeddings, embedding_dim],
+            ))
+        } else {
+            None
+        };
+
+        Ok(vec![grad_w])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.weight.clone()]
+    }
+}
+
+/// Embedding lookup forward pass.
+/// weight: [num_embeddings, embedding_dim]
+/// indices: flat list of token indices
+/// Returns: [indices.len(), embedding_dim] (or reshaped to match input shape + embedding_dim)
+pub fn embedding_forward(
+    weight: &Variable,
+    indices: &[usize],
+    output_shape: &[usize],
+) -> Result<Variable> {
+    let w = weight.tensor();
+    let w_data = w.to_vec_f32();
+    let w_shape = w.shape().to_vec();
+
+    if w_shape.len() != 2 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "weight".to_string(),
+            reason: format!("embedding weight must be 2D, got {}D", w_shape.len()),
+        });
+    }
+
+    let num_embeddings = w_shape[0];
+    let embedding_dim = w_shape[1];
+
+    let mut output = Vec::with_capacity(indices.len() * embedding_dim);
+    for &idx in indices {
+        if idx >= num_embeddings {
+            return Err(TensorError::InvalidArgument {
+                parameter: "indices".to_string(),
+                reason: format!(
+                    "index {} out of range for embedding with {} entries",
+                    idx, num_embeddings
+                ),
+            });
+        }
+        let off = idx * embedding_dim;
+        output.extend_from_slice(&w_data[off..off + embedding_dim]);
+    }
+
+    let result = Tensor::from_vec(output, output_shape);
+
+    if weight.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(EmbeddingBackward {
+                weight: weight.clone(),
+                indices: indices.to_vec(),
+                num_embeddings,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Scaled Dot-Product Attention ----
+// attn = softmax(Q @ K^T / sqrt(d_k)) @ V
+// Backward: standard attention gradient formulas
+
+struct ScaledDotProductAttentionBackward {
+    q: Variable,
+    k: Variable,
+    v: Variable,
+    attn_weights: Tensor, // softmax output [B, seq_q, seq_k]
+    scale: f32,
+}
+
+impl GradFn for ScaledDotProductAttentionBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        // grad_output: [B, seq_q, d_v]
+        let go = grad_output.to_vec_f32();
+        let go_shape = grad_output.shape();
+        let batch = go_shape[0];
+        let seq_q = go_shape[1];
+        let d_v = go_shape[2];
+
+        let v_data = self.v.tensor().to_vec_f32();
+        let v_shape = self.v.shape();
+        let seq_k = v_shape[1];
+
+        let q_data = self.q.tensor().to_vec_f32();
+        let q_shape = self.q.shape();
+        let d_k = q_shape[2];
+
+        let k_data = self.k.tensor().to_vec_f32();
+        let attn = self.attn_weights.to_vec_f32();
+
+        // grad_V = attn^T @ grad_output  [B, seq_k, d_v]
+        let grad_v = if self.v.requires_grad() {
+            let mut gv = vec![0.0f32; batch * seq_k * d_v];
+            for b in 0..batch {
+                // attn[b]: [seq_q, seq_k], go[b]: [seq_q, d_v]
+                // attn^T @ go = [seq_k, seq_q] @ [seq_q, d_v] = [seq_k, d_v]
+                for sk in 0..seq_k {
+                    for dv in 0..d_v {
+                        let mut sum = 0.0f32;
+                        for sq in 0..seq_q {
+                            sum += attn[b * seq_q * seq_k + sq * seq_k + sk]
+                                * go[b * seq_q * d_v + sq * d_v + dv];
+                        }
+                        gv[b * seq_k * d_v + sk * d_v + dv] = sum;
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gv, &[batch, seq_k, d_v]))
+        } else {
+            None
+        };
+
+        // grad_attn = grad_output @ V^T  [B, seq_q, seq_k]
+        let mut grad_attn = vec![0.0f32; batch * seq_q * seq_k];
+        for b in 0..batch {
+            for sq in 0..seq_q {
+                for sk in 0..seq_k {
+                    let mut sum = 0.0f32;
+                    for dv in 0..d_v {
+                        sum += go[b * seq_q * d_v + sq * d_v + dv]
+                            * v_data[b * seq_k * d_v + sk * d_v + dv];
+                    }
+                    grad_attn[b * seq_q * seq_k + sq * seq_k + sk] = sum;
+                }
+            }
+        }
+
+        // grad_scores = softmax_backward(grad_attn, attn_weights)
+        // For softmax: d_scores[i] = attn[i] * (grad_attn[i] - sum(grad_attn * attn))
+        let mut grad_scores = vec![0.0f32; batch * seq_q * seq_k];
+        for b in 0..batch {
+            for sq in 0..seq_q {
+                let off = b * seq_q * seq_k + sq * seq_k;
+                let mut dot = 0.0f32;
+                for sk in 0..seq_k {
+                    dot += grad_attn[off + sk] * attn[off + sk];
+                }
+                for sk in 0..seq_k {
+                    grad_scores[off + sk] = attn[off + sk] * (grad_attn[off + sk] - dot);
+                }
+            }
+        }
+
+        // Scale
+        for v in grad_scores.iter_mut() {
+            *v *= self.scale;
+        }
+
+        // grad_Q = grad_scores @ K  [B, seq_q, d_k]
+        let grad_q = if self.q.requires_grad() {
+            let mut gq = vec![0.0f32; batch * seq_q * d_k];
+            for b in 0..batch {
+                for sq in 0..seq_q {
+                    for dk in 0..d_k {
+                        let mut sum = 0.0f32;
+                        for sk in 0..seq_k {
+                            sum += grad_scores[b * seq_q * seq_k + sq * seq_k + sk]
+                                * k_data[b * seq_k * d_k + sk * d_k + dk];
+                        }
+                        gq[b * seq_q * d_k + sq * d_k + dk] = sum;
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gq, &[batch, seq_q, d_k]))
+        } else {
+            None
+        };
+
+        // grad_K = grad_scores^T @ Q  [B, seq_k, d_k]
+        let grad_k = if self.k.requires_grad() {
+            let mut gk = vec![0.0f32; batch * seq_k * d_k];
+            for b in 0..batch {
+                for sk in 0..seq_k {
+                    for dk in 0..d_k {
+                        let mut sum = 0.0f32;
+                        for sq in 0..seq_q {
+                            sum += grad_scores[b * seq_q * seq_k + sq * seq_k + sk]
+                                * q_data[b * seq_q * d_k + sq * d_k + dk];
+                        }
+                        gk[b * seq_k * d_k + sk * d_k + dk] = sum;
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gk, &[batch, seq_k, d_k]))
+        } else {
+            None
+        };
+
+        Ok(vec![grad_q, grad_k, grad_v])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.q.clone(), self.k.clone(), self.v.clone()]
+    }
+}
+
+/// Scaled dot-product attention forward.
+/// Q: [B, seq_q, d_k], K: [B, seq_k, d_k], V: [B, seq_k, d_v]
+/// Returns: [B, seq_q, d_v]
+/// Also returns attention weights for potential use.
+pub fn scaled_dot_product_attention_forward(
+    q: &Variable,
+    k: &Variable,
+    v: &Variable,
+) -> Result<(Variable, Tensor)> {
+    let q_data = q.tensor().to_vec_f32();
+    let k_data = k.tensor().to_vec_f32();
+    let v_data = v.tensor().to_vec_f32();
+
+    let q_shape = q.shape();
+    let k_shape = k.shape();
+    let v_shape = v.shape();
+
+    if q_shape.len() != 3 || k_shape.len() != 3 || v_shape.len() != 3 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "q/k/v".to_string(),
+            reason: format!(
+                "expected 3D tensors [B, seq, dim], got {}D/{}D/{}D",
+                q_shape.len(),
+                k_shape.len(),
+                v_shape.len()
+            ),
+        });
+    }
+
+    let batch = q_shape[0];
+    let seq_q = q_shape[1];
+    let d_k = q_shape[2];
+    let seq_k = k_shape[1];
+    let d_v = v_shape[2];
+
+    let scale = 1.0 / (d_k as f32).sqrt();
+
+    // Compute attention scores: Q @ K^T / sqrt(d_k)  →  [B, seq_q, seq_k]
+    let mut scores = vec![0.0f32; batch * seq_q * seq_k];
+    for b in 0..batch {
+        for sq in 0..seq_q {
+            for sk in 0..seq_k {
+                let mut dot = 0.0f32;
+                for d in 0..d_k {
+                    dot += q_data[b * seq_q * d_k + sq * d_k + d]
+                        * k_data[b * seq_k * d_k + sk * d_k + d];
+                }
+                scores[b * seq_q * seq_k + sq * seq_k + sk] = dot * scale;
+            }
+        }
+    }
+
+    // Softmax over seq_k dimension (last dim)
+    let mut attn_weights = vec![0.0f32; batch * seq_q * seq_k];
+    for b in 0..batch {
+        for sq in 0..seq_q {
+            let off = b * seq_q * seq_k + sq * seq_k;
+            let mut max_val = f32::NEG_INFINITY;
+            for sk in 0..seq_k {
+                max_val = max_val.max(scores[off + sk]);
+            }
+            let mut sum_exp = 0.0f32;
+            for sk in 0..seq_k {
+                let e = (scores[off + sk] - max_val).exp();
+                attn_weights[off + sk] = e;
+                sum_exp += e;
+            }
+            for sk in 0..seq_k {
+                attn_weights[off + sk] /= sum_exp;
+            }
+        }
+    }
+
+    // Attention output: attn_weights @ V  →  [B, seq_q, d_v]
+    let mut output = vec![0.0f32; batch * seq_q * d_v];
+    for b in 0..batch {
+        for sq in 0..seq_q {
+            for dv in 0..d_v {
+                let mut sum = 0.0f32;
+                for sk in 0..seq_k {
+                    sum += attn_weights[b * seq_q * seq_k + sq * seq_k + sk]
+                        * v_data[b * seq_k * d_v + sk * d_v + dv];
+                }
+                output[b * seq_q * d_v + sq * d_v + dv] = sum;
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &[batch, seq_q, d_v]);
+    let attn_tensor = Tensor::from_vec(attn_weights.clone(), &[batch, seq_q, seq_k]);
+
+    let needs_grad = q.requires_grad() || k.requires_grad() || v.requires_grad();
+
+    let output_var = if needs_grad {
+        Variable::from_op(
+            result,
+            Box::new(ScaledDotProductAttentionBackward {
+                q: q.clone(),
+                k: k.clone(),
+                v: v.clone(),
+                attn_weights: Tensor::from_vec(attn_weights, &[batch, seq_q, seq_k]),
+                scale,
+            }),
+        )
+    } else {
+        Variable::detach(result)
+    };
+
+    Ok((output_var, attn_tensor))
+}

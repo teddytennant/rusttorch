@@ -2897,3 +2897,640 @@ fn test_lr_scheduler_trait() {
     let cosine: &dyn super::LRScheduler = &super::CosineAnnealingLR::new(0.1, 0.0, 100);
     assert!((cosine.lr_at(0) - 0.1).abs() < 1e-5);
 }
+
+// ---- LayerNorm tests ----
+
+#[test]
+fn test_layer_norm_output_shape() {
+    let ln = LayerNorm::new(4);
+    let x = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 4]),
+        true,
+    );
+    let out = ln.forward(&x).unwrap();
+    assert_eq!(out.shape(), vec![2, 4]);
+}
+
+#[test]
+fn test_layer_norm_zero_mean() {
+    let ln = LayerNorm::new(4);
+    // With weight=1, bias=0 (defaults), output should have ~zero mean per instance
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 4]), true);
+    let out = ln.forward(&x).unwrap();
+    let data = out.tensor().to_vec_f32();
+    let mean: f32 = data.iter().sum::<f32>() / data.len() as f32;
+    assert!(mean.abs() < 1e-5, "mean should be ~0, got {}", mean);
+}
+
+#[test]
+fn test_layer_norm_unit_variance() {
+    let ln = LayerNorm::new(4);
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 4]), true);
+    let out = ln.forward(&x).unwrap();
+    let data = out.tensor().to_vec_f32();
+    let mean: f32 = data.iter().sum::<f32>() / data.len() as f32;
+    let var: f32 = data.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / data.len() as f32;
+    assert!(
+        (var - 1.0).abs() < 0.1,
+        "variance should be ~1, got {}",
+        var
+    );
+}
+
+#[test]
+fn test_layer_norm_parameters() {
+    let ln = LayerNorm::new(8);
+    let params = ln.parameters();
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0].shape(), vec![8]); // weight
+    assert_eq!(params[1].shape(), vec![8]); // bias
+}
+
+#[test]
+fn test_layer_norm_backward() {
+    let ln = LayerNorm::new(4);
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 4]), true);
+    let out = ln.forward(&x).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+    assert!(x.grad().is_some());
+    assert!(ln.weight.grad().is_some());
+    assert!(ln.bias.grad().is_some());
+}
+
+#[test]
+fn test_layer_norm_numerical_gradient() {
+    let ln = LayerNorm::new(3);
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 3.0, 5.0], &[1, 3]), true);
+    let eps = 1e-4;
+
+    // Analytical gradient
+    let out = ln.forward(&x).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+    let analytical_grad = x.grad().unwrap().to_vec_f32();
+
+    // Numerical gradient via central differences
+    let x_data = x.tensor().to_vec_f32();
+    let mut numerical_grad = vec![0.0f32; 3];
+    for i in 0..3 {
+        let mut xp = x_data.clone();
+        let mut xm = x_data.clone();
+        xp[i] += eps;
+        xm[i] -= eps;
+
+        let vp = Variable::new(Tensor::from_vec(xp, &[1, 3]), false);
+        let vm = Variable::new(Tensor::from_vec(xm, &[1, 3]), false);
+        let lp = ln
+            .forward(&vp)
+            .unwrap()
+            .sum()
+            .unwrap()
+            .tensor()
+            .to_vec_f32()[0];
+        let lm = ln
+            .forward(&vm)
+            .unwrap()
+            .sum()
+            .unwrap()
+            .tensor()
+            .to_vec_f32()[0];
+        numerical_grad[i] = (lp - lm) / (2.0 * eps);
+    }
+
+    for i in 0..3 {
+        assert!(
+            (analytical_grad[i] - numerical_grad[i]).abs() < 0.05,
+            "grad[{}]: analytical={}, numerical={}",
+            i,
+            analytical_grad[i],
+            numerical_grad[i]
+        );
+    }
+}
+
+#[test]
+fn test_layer_norm_batch() {
+    let ln = LayerNorm::new(3);
+    let x = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0], &[2, 3]),
+        true,
+    );
+    let out = ln.forward(&x).unwrap();
+    let data = out.tensor().to_vec_f32();
+
+    // Each row should be independently normalized
+    let mean1: f32 = data[0..3].iter().sum::<f32>() / 3.0;
+    let mean2: f32 = data[3..6].iter().sum::<f32>() / 3.0;
+    assert!(mean1.abs() < 1e-5, "row 1 mean should be ~0");
+    assert!(mean2.abs() < 1e-5, "row 2 mean should be ~0");
+}
+
+#[test]
+fn test_layer_norm_with_eps() {
+    let ln = LayerNorm::with_eps(4, 1e-3);
+    assert!((ln.eps - 1e-3).abs() < 1e-6);
+    let x = Variable::new(Tensor::from_vec(vec![1.0; 4], &[1, 4]), false);
+    // Constant input should produce zeros (after centering by mean)
+    let out = ln.forward(&x).unwrap();
+    let data = out.tensor().to_vec_f32();
+    for &v in &data {
+        assert!(v.abs() < 1e-3, "constant input should normalize to ~0");
+    }
+}
+
+#[test]
+fn test_layer_norm_debug() {
+    let ln = LayerNorm::new(64);
+    let dbg = format!("{:?}", ln);
+    assert!(dbg.contains("LayerNorm"));
+    assert!(dbg.contains("64"));
+}
+
+// ---- Embedding tests ----
+
+#[test]
+fn test_embedding_output_shape() {
+    let emb = Embedding::new(10, 4);
+    let out = emb.forward_indices(&[0, 1, 2], &[3, 4]).unwrap();
+    assert_eq!(out.shape(), vec![3, 4]);
+}
+
+#[test]
+fn test_embedding_2d() {
+    let emb = Embedding::new(10, 4);
+    let indices = vec![vec![0, 1, 2], vec![3, 4, 5]];
+    let out = emb.forward_2d(&indices).unwrap();
+    assert_eq!(out.shape(), vec![2, 3, 4]);
+}
+
+#[test]
+fn test_embedding_lookup_correct() {
+    let emb = Embedding::new(5, 3);
+    let weight_data = emb.weight.tensor().to_vec_f32();
+
+    // Look up indices 0 and 2
+    let out = emb.forward_indices(&[0, 2], &[2, 3]).unwrap();
+    let out_data = out.tensor().to_vec_f32();
+
+    // Row 0 of output should match row 0 of weight
+    for i in 0..3 {
+        assert!((out_data[i] - weight_data[i]).abs() < 1e-6);
+    }
+    // Row 1 of output should match row 2 of weight
+    for i in 0..3 {
+        assert!((out_data[3 + i] - weight_data[6 + i]).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn test_embedding_out_of_range() {
+    let emb = Embedding::new(5, 3);
+    let result = emb.forward_indices(&[5], &[1, 3]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_embedding_backward() {
+    let emb = Embedding::new(5, 3);
+    let out = emb.forward_indices(&[0, 1, 0], &[3, 3]).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+    let grad = emb.weight.grad().unwrap().to_vec_f32();
+
+    // Index 0 used twice → gradient accumulated
+    // Index 1 used once
+    // Indices 2-4 unused → zero gradient
+    let dim = 3;
+    for i in 0..dim {
+        assert!(
+            (grad[0 * dim + i] - 2.0).abs() < 1e-5,
+            "idx 0 grad should be 2.0"
+        );
+        assert!(
+            (grad[1 * dim + i] - 1.0).abs() < 1e-5,
+            "idx 1 grad should be 1.0"
+        );
+        assert!((grad[2 * dim + i]).abs() < 1e-5, "idx 2 grad should be 0");
+    }
+}
+
+#[test]
+fn test_embedding_parameters() {
+    let emb = Embedding::new(100, 32);
+    let params = emb.parameters();
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].shape(), vec![100, 32]);
+}
+
+#[test]
+fn test_embedding_state_dict() {
+    let emb = Embedding::new(10, 4);
+    let sd = emb.state_dict();
+    assert!(sd.get("weight").is_some());
+    assert_eq!(sd.get("weight").unwrap().shape(), &[10, 4]);
+}
+
+#[test]
+fn test_embedding_debug() {
+    let emb = Embedding::new(1000, 256);
+    let dbg = format!("{:?}", emb);
+    assert!(dbg.contains("Embedding"));
+    assert!(dbg.contains("1000"));
+    assert!(dbg.contains("256"));
+}
+
+// ---- Scaled Dot-Product Attention tests ----
+
+#[test]
+fn test_sdpa_output_shape() {
+    let q = Variable::new(Tensor::from_vec(vec![0.0; 2 * 3 * 4], &[2, 3, 4]), true);
+    let k = Variable::new(Tensor::from_vec(vec![0.0; 2 * 5 * 4], &[2, 5, 4]), true);
+    let v = Variable::new(Tensor::from_vec(vec![0.0; 2 * 5 * 6], &[2, 5, 6]), true);
+
+    let (out, attn) =
+        crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+    assert_eq!(out.shape(), vec![2, 3, 6]); // [B, seq_q, d_v]
+    assert_eq!(attn.shape(), &[2, 3, 5]); // [B, seq_q, seq_k]
+}
+
+#[test]
+fn test_sdpa_attention_weights_sum_to_one() {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let q_data: Vec<f32> = (0..12).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    let k_data: Vec<f32> = (0..12).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    let v_data: Vec<f32> = (0..12).map(|_| rng.gen_range(-1.0..1.0)).collect();
+
+    let q = Variable::new(Tensor::from_vec(q_data, &[1, 3, 4]), false);
+    let k = Variable::new(Tensor::from_vec(k_data, &[1, 3, 4]), false);
+    let v = Variable::new(Tensor::from_vec(v_data, &[1, 3, 4]), false);
+
+    let (_, attn) = crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+    let attn_data = attn.to_vec_f32();
+
+    // Each row of attention weights should sum to 1
+    for sq in 0..3 {
+        let row_sum: f32 = attn_data[sq * 3..(sq + 1) * 3].iter().sum();
+        assert!(
+            (row_sum - 1.0).abs() < 1e-5,
+            "attn row {} sum={}",
+            sq,
+            row_sum
+        );
+    }
+}
+
+#[test]
+fn test_sdpa_identical_qk() {
+    // When Q == K, diagonal of attention should be strongest
+    let data: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let q = Variable::new(Tensor::from_vec(data.clone(), &[1, 3, 4]), false);
+    let k = Variable::new(Tensor::from_vec(data, &[1, 3, 4]), false);
+    let v_data = vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let v = Variable::new(Tensor::from_vec(v_data, &[1, 3, 4]), false);
+
+    let (_, attn) = crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+    let attn_data = attn.to_vec_f32();
+
+    // Diagonal should be largest in each row
+    for i in 0..3 {
+        let diag = attn_data[i * 3 + i];
+        for j in 0..3 {
+            if j != i {
+                assert!(diag >= attn_data[i * 3 + j], "diagonal should be largest");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_sdpa_backward() {
+    let q = Variable::new(
+        Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], &[1, 2, 4]),
+        true,
+    );
+    let k = Variable::new(
+        Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0], &[1, 2, 4]),
+        true,
+    );
+    let v = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[1, 2, 4]),
+        true,
+    );
+
+    let (out, _) = crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+
+    assert!(q.grad().is_some(), "Q should have gradient");
+    assert!(k.grad().is_some(), "K should have gradient");
+    assert!(v.grad().is_some(), "V should have gradient");
+}
+
+#[test]
+fn test_sdpa_numerical_gradient() {
+    let eps = 1e-3;
+    let q_data = vec![0.5, -0.3, 0.2, 0.8, -0.1, 0.6];
+    let k_data = vec![0.3, 0.1, -0.5, -0.2, 0.4, 0.7];
+    let v_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+    // Analytical
+    let q = Variable::new(Tensor::from_vec(q_data.clone(), &[1, 2, 3]), true);
+    let k = Variable::new(Tensor::from_vec(k_data.clone(), &[1, 2, 3]), true);
+    let v = Variable::new(Tensor::from_vec(v_data.clone(), &[1, 2, 3]), true);
+    let (out, _) = crate::autograd::ops::scaled_dot_product_attention_forward(&q, &k, &v).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+    let q_grad = q.grad().unwrap().to_vec_f32();
+
+    // Numerical for Q
+    for i in 0..6 {
+        let mut qp = q_data.clone();
+        let mut qm = q_data.clone();
+        qp[i] += eps;
+        qm[i] -= eps;
+
+        let qpv = Variable::new(Tensor::from_vec(qp, &[1, 2, 3]), false);
+        let qmv = Variable::new(Tensor::from_vec(qm, &[1, 2, 3]), false);
+        let kv = Variable::new(Tensor::from_vec(k_data.clone(), &[1, 2, 3]), false);
+        let vv = Variable::new(Tensor::from_vec(v_data.clone(), &[1, 2, 3]), false);
+
+        let (op, _) =
+            crate::autograd::ops::scaled_dot_product_attention_forward(&qpv, &kv, &vv).unwrap();
+        let (om, _) =
+            crate::autograd::ops::scaled_dot_product_attention_forward(&qmv, &kv, &vv).unwrap();
+        let lp = op.sum().unwrap().tensor().to_vec_f32()[0];
+        let lm = om.sum().unwrap().tensor().to_vec_f32()[0];
+        let numerical = (lp - lm) / (2.0 * eps);
+        assert!(
+            (q_grad[i] - numerical).abs() < 0.05,
+            "Q grad[{}]: analytical={}, numerical={}",
+            i,
+            q_grad[i],
+            numerical
+        );
+    }
+}
+
+// ---- MultiHeadAttention tests ----
+
+#[test]
+fn test_mha_output_shape() {
+    let mha = MultiHeadAttention::new(8, 2);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 2 * 3 * 8], &[2, 3, 8]), true);
+    let out = mha.forward_self_attn(&x).unwrap();
+    assert_eq!(out.shape(), vec![2, 3, 8]);
+}
+
+#[test]
+fn test_mha_parameters_count() {
+    let mha = MultiHeadAttention::new(16, 4);
+    // 4 weight matrices [16,16] + 4 bias vectors [1,16]
+    // = 4*256 + 4*16 = 1024 + 64 = 1088
+    assert_eq!(mha.num_parameters(), 1088);
+}
+
+#[test]
+fn test_mha_cross_attention() {
+    let mha = MultiHeadAttention::new(8, 2);
+    let q = Variable::new(Tensor::from_vec(vec![0.1; 1 * 3 * 8], &[1, 3, 8]), true);
+    let k = Variable::new(Tensor::from_vec(vec![0.1; 1 * 5 * 8], &[1, 5, 8]), true);
+    let v = Variable::new(Tensor::from_vec(vec![0.1; 1 * 5 * 8], &[1, 5, 8]), true);
+    let out = mha.forward_qkv(&q, &k, &v).unwrap();
+    assert_eq!(out.shape(), vec![1, 3, 8]); // seq_q dimension preserved
+}
+
+#[test]
+fn test_mha_backward() {
+    let mha = MultiHeadAttention::new(4, 2);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 1 * 2 * 4], &[1, 2, 4]), true);
+    let out = mha.forward_self_attn(&x).unwrap();
+    let out_flat = out.reshape(&[2, 4]).unwrap();
+    let loss = out_flat.sum().unwrap();
+    loss.backward().unwrap();
+
+    assert!(x.grad().is_some(), "input should have gradient");
+    // Check that weight parameters have gradients
+    assert!(mha.w_q.grad().is_some(), "W_Q should have gradient");
+    assert!(mha.w_k.grad().is_some(), "W_K should have gradient");
+    assert!(mha.w_v.grad().is_some(), "W_V should have gradient");
+    assert!(mha.w_o.grad().is_some(), "W_O should have gradient");
+}
+
+#[test]
+fn test_mha_state_dict() {
+    let mha = MultiHeadAttention::new(8, 2);
+    let sd = mha.state_dict();
+    assert!(sd.get("q_proj.weight").is_some());
+    assert!(sd.get("k_proj.weight").is_some());
+    assert!(sd.get("v_proj.weight").is_some());
+    assert!(sd.get("out_proj.weight").is_some());
+    assert!(sd.get("q_proj.bias").is_some());
+}
+
+#[test]
+fn test_mha_debug() {
+    let mha = MultiHeadAttention::new(64, 8);
+    let dbg = format!("{:?}", mha);
+    assert!(dbg.contains("MultiHeadAttention"));
+    assert!(dbg.contains("64"));
+    assert!(dbg.contains("8"));
+}
+
+// ---- TransformerEncoderLayer tests ----
+
+#[test]
+fn test_transformer_encoder_layer_output_shape() {
+    let layer = TransformerEncoderLayer::new(8, 2, 32);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 2 * 4 * 8], &[2, 4, 8]), true);
+    let out = layer.forward(&x).unwrap();
+    assert_eq!(out.shape(), vec![2, 4, 8]);
+}
+
+#[test]
+fn test_transformer_encoder_layer_parameters() {
+    let layer = TransformerEncoderLayer::new(8, 2, 32);
+    let params = layer.parameters();
+    // MHA: 4 weights [8,8] + 4 biases [1,8] = 4*64 + 4*8 = 288
+    // 2 LayerNorms: 2*(weight[8] + bias[8]) = 32
+    // FF1: weight[8,32] + bias[1,32] = 256 + 32 = 288
+    // FF2: weight[32,8] + bias[1,8] = 256 + 8 = 264
+    // Total params: 288 + 32 + 288 + 264 = 872
+    assert!(params.len() > 10, "should have many parameter tensors");
+    assert_eq!(layer.num_parameters(), 872);
+}
+
+#[test]
+fn test_transformer_encoder_layer_backward() {
+    let layer = TransformerEncoderLayer::new(4, 2, 16);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 1 * 2 * 4], &[1, 2, 4]), true);
+    let out = layer.forward(&x).unwrap();
+    let out_flat = out.reshape(&[2, 4]).unwrap();
+    let loss = out_flat.sum().unwrap();
+    loss.backward().unwrap();
+
+    assert!(x.grad().is_some(), "input should have gradient");
+    // Check some FFN parameters have gradients
+    assert!(layer.ff_linear1.weight.grad().is_some());
+    assert!(layer.ff_linear2.weight.grad().is_some());
+}
+
+#[test]
+fn test_transformer_encoder_layer_state_dict() {
+    let layer = TransformerEncoderLayer::new(8, 2, 32);
+    let sd = layer.state_dict();
+
+    // Should have hierarchically named parameters
+    assert!(sd.get("self_attn.q_proj.weight").is_some());
+    assert!(sd.get("norm1.weight").is_some());
+    assert!(sd.get("norm2.bias").is_some());
+    assert!(sd.get("ff_linear1.weight").is_some());
+    assert!(sd.get("ff_linear2.weight").is_some());
+}
+
+#[test]
+fn test_transformer_encoder_layer_debug() {
+    let layer = TransformerEncoderLayer::new(64, 8, 256);
+    let dbg = format!("{:?}", layer);
+    assert!(dbg.contains("TransformerEncoderLayer"));
+    assert!(dbg.contains("64"));
+    assert!(dbg.contains("256"));
+}
+
+// ---- TransformerEncoder tests ----
+
+#[test]
+fn test_transformer_encoder_output_shape() {
+    let encoder = TransformerEncoder::new(8, 2, 32, 2);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 1 * 3 * 8], &[1, 3, 8]), true);
+    let out = encoder.forward(&x).unwrap();
+    assert_eq!(out.shape(), vec![1, 3, 8]);
+}
+
+#[test]
+fn test_transformer_encoder_parameters() {
+    let encoder = TransformerEncoder::new(8, 2, 32, 2);
+    // 2 layers * layer_params + final norm (weight[8] + bias[8] = 16)
+    let layer_params = TransformerEncoderLayer::new(8, 2, 32).num_parameters();
+    let expected = 2 * layer_params + 16;
+    assert_eq!(encoder.num_parameters(), expected);
+}
+
+#[test]
+fn test_transformer_encoder_backward() {
+    let encoder = TransformerEncoder::new(4, 2, 16, 2);
+    let x = Variable::new(Tensor::from_vec(vec![0.1; 1 * 2 * 4], &[1, 2, 4]), true);
+    let out = encoder.forward(&x).unwrap();
+    let out_flat = out.reshape(&[2, 4]).unwrap();
+    let loss = out_flat.sum().unwrap();
+    loss.backward().unwrap();
+
+    assert!(x.grad().is_some(), "input should have gradient");
+}
+
+#[test]
+fn test_transformer_encoder_state_dict() {
+    let encoder = TransformerEncoder::new(8, 2, 32, 2);
+    let sd = encoder.state_dict();
+
+    assert!(sd.get("layers.0.self_attn.q_proj.weight").is_some());
+    assert!(sd.get("layers.1.ff_linear2.weight").is_some());
+    assert!(sd.get("norm.weight").is_some());
+}
+
+#[test]
+fn test_transformer_encoder_debug() {
+    let encoder = TransformerEncoder::new(32, 4, 128, 6);
+    let dbg = format!("{:?}", encoder);
+    assert!(dbg.contains("TransformerEncoder"));
+    assert!(dbg.contains("6"));
+}
+
+// ---- Integration: Transformer training test ----
+
+#[test]
+fn test_transformer_training_step() {
+    // Tiny transformer: d_model=4, 2 heads, d_ff=8, 1 layer
+    let encoder = TransformerEncoder::new(4, 2, 8, 1);
+    let _criterion = CrossEntropyLoss::new();
+
+    // Input: batch=1, seq_len=2, d_model=4
+    let x = Variable::new(
+        Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], &[1, 2, 4]),
+        true,
+    );
+
+    // Forward through encoder
+    let encoded = encoder.forward(&x).unwrap();
+
+    // Classification head: take first token, project to num_classes=3
+    let first_token = encoded.reshape(&[2, 4]).unwrap();
+    // Just use sum and mean as a simple loss
+    let loss = first_token.sum().unwrap();
+    let loss_val = loss.tensor().to_vec_f32()[0];
+
+    // Backward
+    loss.backward().unwrap();
+
+    // Verify gradients exist
+    assert!(x.grad().is_some());
+
+    // Verify parameters have gradients
+    let params = encoder.parameters();
+    for p in &params {
+        assert!(
+            p.grad().is_some(),
+            "param {} should have gradient",
+            p.name()
+        );
+    }
+
+    // Verify loss is finite
+    assert!(
+        loss_val.is_finite(),
+        "loss should be finite, got {}",
+        loss_val
+    );
+}
+
+#[test]
+fn test_embedding_plus_transformer() {
+    // Integration: Embedding → TransformerEncoder → Classification
+    let vocab_size = 20;
+    let d_model = 8;
+    let emb = Embedding::new(vocab_size, d_model);
+    let encoder = TransformerEncoder::new(d_model, 2, 32, 1);
+
+    // Input: batch of 2 sequences, each length 3
+    let indices = vec![vec![0, 5, 10], vec![3, 7, 15]];
+    let x = emb.forward_2d(&indices).unwrap(); // [2, 3, 8]
+    assert_eq!(x.shape(), vec![2, 3, 8]);
+
+    let encoded = encoder.forward(&x).unwrap(); // [2, 3, 8]
+    assert_eq!(encoded.shape(), vec![2, 3, 8]);
+
+    // Compute loss and backward
+    let flat = encoded.reshape(&[6, 8]).unwrap();
+    let loss = flat.sum().unwrap();
+    loss.backward().unwrap();
+
+    // Embedding weights should get gradient via scatter-add
+    assert!(emb.weight.grad().is_some());
+    let grad = emb.weight.grad().unwrap().to_vec_f32();
+
+    // Unused tokens (e.g., token 1) should have zero gradient
+    let token1_grad: f32 = grad[1 * d_model..(1 + 1) * d_model]
+        .iter()
+        .map(|v| v.abs())
+        .sum();
+    assert!(token1_grad < 1e-6, "unused token should have zero gradient");
+
+    // Used tokens should have some gradient (may be small due to normalization)
+    let used_grad_total: f32 = grad.iter().map(|v| v.abs()).sum();
+    assert!(
+        used_grad_total > 1e-10,
+        "total embedding gradient should be non-zero, got {}",
+        used_grad_total
+    );
+}

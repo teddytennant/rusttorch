@@ -6,12 +6,17 @@
 //! - `Linear` — fully connected layer
 //! - `Conv2d` — 2D convolution layer
 //! - `BatchNorm2d` — batch normalization
-//! - `MaxPool2d` — 2D max pooling
+//! - `LayerNorm` — layer normalization (Transformers)
+//! - `MaxPool2d`, `AvgPool2d`, `AdaptiveAvgPool2d` — pooling
 //! - `Flatten` — flatten spatial dimensions
 //! - `Dropout` — regularization via random zeroing
 //! - `ReLU`, `Sigmoid`, `Tanh` — activation modules
+//! - `Embedding` — token embedding lookup table
+//! - `MultiHeadAttention` — multi-head self/cross attention
+//! - `TransformerEncoderLayer`, `TransformerEncoder` — Transformer blocks
 //! - `Sequential` — layer container
-//! - `MSELoss` — loss function
+//! - `ResidualBlock`, `ResNet` — residual networks
+//! - `MSELoss`, `CrossEntropyLoss` — loss functions
 //! - `SGD`, `Adam` — optimizers
 //!
 //! # Example
@@ -36,10 +41,13 @@
 //! ```
 
 pub mod activation;
+pub mod attention;
 pub mod batchnorm;
 pub mod conv2d;
 pub mod dropout;
+pub mod embedding;
 pub mod flatten;
+pub mod layernorm;
 pub mod linear;
 pub mod loss;
 pub mod module;
@@ -50,15 +58,19 @@ pub mod residual;
 pub mod resnet;
 pub mod sequential;
 pub mod state_dict;
+pub mod transformer;
 
 #[cfg(test)]
 mod tests;
 
 pub use activation::{ReLU, Sigmoid, Tanh};
+pub use attention::MultiHeadAttention;
 pub use batchnorm::BatchNorm2d;
 pub use conv2d::Conv2d;
 pub use dropout::Dropout;
+pub use embedding::Embedding;
 pub use flatten::Flatten;
+pub use layernorm::LayerNorm;
 pub use linear::Linear;
 pub use loss::{CrossEntropyLoss, MSELoss};
 pub use module::Module;
@@ -72,3 +84,4 @@ pub use residual::ResidualBlock;
 pub use resnet::ResNet;
 pub use sequential::Sequential;
 pub use state_dict::StateDict;
+pub use transformer::{TransformerEncoder, TransformerEncoderLayer};
