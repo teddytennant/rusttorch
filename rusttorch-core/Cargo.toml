@@ -31,6 +31,14 @@ default = []
 ffi = []  # Enable C FFI exports for PyTorch integration
 datasets = ["ureq", "flate2", "tar"]  # Download and load standard datasets (MNIST, CIFAR-10, etc.)
 
+[[example]]
+name = "mnist"
+required-features = ["datasets"]
+
+[[example]]
+name = "cifar10"
+required-features = ["datasets"]
+
 [[bench]]
 name = "tensor_ops"
 harness = false
