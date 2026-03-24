@@ -223,6 +223,11 @@ impl Variable {
     pub fn reshape(&self, new_shape: &[usize]) -> Result<Variable> {
         crate::autograd::ops::reshape_forward(self, new_shape)
     }
+
+    /// Log-softmax along a dimension (numerically stable).
+    pub fn log_softmax(&self, dim: usize) -> Result<Variable> {
+        crate::autograd::ops::log_softmax_forward(self, dim)
+    }
 }
 
 impl fmt::Debug for Variable {

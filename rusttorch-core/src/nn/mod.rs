@@ -57,7 +57,7 @@ pub use conv2d::Conv2d;
 pub use dropout::Dropout;
 pub use flatten::Flatten;
 pub use linear::Linear;
-pub use loss::MSELoss;
+pub use loss::{CrossEntropyLoss, MSELoss};
 pub use module::Module;
 pub use optim::{Adam, Optimizer, SGD};
 pub use parameter::Parameter;

@@ -1421,3 +1421,181 @@ pub fn dropout_forward(input: &Variable, p: f32) -> Result<Variable> {
         Ok(Variable::detach(result))
     }
 }
+
+// ---- LogSoftmax: numerically stable log(softmax(x)) ----
+// log_softmax(x_i) = x_i - max(x) - log(sum(exp(x_j - max(x))))
+// Backward: grad_input = grad_output - softmax(x) * sum(grad_output)
+
+struct LogSoftmaxBackward {
+    input: Variable,
+    softmax_output: Tensor, // softmax(x), saved for backward
+    dim: usize,
+}
+
+impl GradFn for LogSoftmaxBackward {
+    #[allow(clippy::needless_range_loop)]
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let grad_input = if self.input.requires_grad() {
+            let grad_data = grad_output.to_vec_f32();
+            let softmax_data = self.softmax_output.to_vec_f32();
+            let shape = grad_output.shape();
+
+            // For 2D [B, C] with dim=1:
+            // grad_input[b,c] = grad_output[b,c] - softmax[b,c] * sum_c(grad_output[b,c])
+            if shape.len() == 2 && self.dim == 1 {
+                let (b, c) = (shape[0], shape[1]);
+                let mut gi = vec![0.0f32; b * c];
+
+                for bi in 0..b {
+                    let mut sum_grad = 0.0f32;
+                    for ci in 0..c {
+                        sum_grad += grad_data[bi * c + ci];
+                    }
+                    for ci in 0..c {
+                        let idx = bi * c + ci;
+                        gi[idx] = grad_data[idx] - softmax_data[idx] * sum_grad;
+                    }
+                }
+                Some(Tensor::from_vec(gi, shape))
+            } else if shape.len() == 1 {
+                // 1D case
+                let sum_grad: f32 = grad_data.iter().sum();
+                let gi: Vec<f32> = grad_data
+                    .iter()
+                    .zip(softmax_data.iter())
+                    .map(|(&g, &s)| g - s * sum_grad)
+                    .collect();
+                Some(Tensor::from_vec(gi, shape))
+            } else {
+                // General fallback: not implemented for >2D
+                return Err(TensorError::InvalidArgument {
+                    parameter: "dim".to_string(),
+                    reason: format!(
+                        "LogSoftmax backward only supports 1D and 2D (dim=1), got {}D dim={}",
+                        shape.len(),
+                        self.dim
+                    ),
+                });
+            }
+        } else {
+            None
+        };
+
+        Ok(vec![grad_input])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// LogSoftmax forward: log(softmax(x, dim)) with numerical stability.
+///
+/// Uses the log-sum-exp trick: log_softmax(x_i) = x_i - max(x) - log(sum(exp(x - max(x))))
+pub fn log_softmax_forward(input: &Variable, dim: usize) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape();
+    let data = tensor.to_vec_f32();
+
+    if shape.len() == 2 && dim == 1 {
+        let (b, c) = (shape[0], shape[1]);
+        let mut log_softmax_data = vec![0.0f32; b * c];
+        let mut softmax_data = vec![0.0f32; b * c];
+
+        for bi in 0..b {
+            // Find max for numerical stability
+            let mut max_val = f32::NEG_INFINITY;
+            for ci in 0..c {
+                max_val = max_val.max(data[bi * c + ci]);
+            }
+
+            // Compute exp(x - max) and sum
+            let mut sum_exp = 0.0f32;
+            for ci in 0..c {
+                let exp_val = (data[bi * c + ci] - max_val).exp();
+                softmax_data[bi * c + ci] = exp_val;
+                sum_exp += exp_val;
+            }
+
+            let log_sum_exp = sum_exp.ln();
+
+            // log_softmax = x - max - log(sum(exp))
+            // softmax = exp / sum
+            for ci in 0..c {
+                let idx = bi * c + ci;
+                log_softmax_data[idx] = data[idx] - max_val - log_sum_exp;
+                softmax_data[idx] /= sum_exp;
+            }
+        }
+
+        let result = Tensor::from_vec(log_softmax_data, shape);
+        let softmax_output = Tensor::from_vec(softmax_data, shape);
+
+        if input.requires_grad() {
+            Ok(Variable::from_op(
+                result,
+                Box::new(LogSoftmaxBackward {
+                    input: input.clone(),
+                    softmax_output,
+                    dim,
+                }),
+            ))
+        } else {
+            Ok(Variable::detach(result))
+        }
+    } else if shape.len() == 1 {
+        let n = shape[0];
+        let max_val = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mut softmax_data = vec![0.0f32; n];
+        let mut sum_exp = 0.0f32;
+
+        for i in 0..n {
+            let e = (data[i] - max_val).exp();
+            softmax_data[i] = e;
+            sum_exp += e;
+        }
+
+        let log_sum_exp = sum_exp.ln();
+        let log_softmax_data: Vec<f32> = data.iter().map(|&x| x - max_val - log_sum_exp).collect();
+        for v in softmax_data.iter_mut() {
+            *v /= sum_exp;
+        }
+
+        let result = Tensor::from_vec(log_softmax_data, shape);
+        let softmax_output = Tensor::from_vec(softmax_data, shape);
+
+        if input.requires_grad() {
+            Ok(Variable::from_op(
+                result,
+                Box::new(LogSoftmaxBackward {
+                    input: input.clone(),
+                    softmax_output,
+                    dim: 0,
+                }),
+            ))
+        } else {
+            Ok(Variable::detach(result))
+        }
+    } else {
+        Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "log_softmax currently supports 1D and 2D (dim=1), got {}D",
+                shape.len()
+            ),
+        })
+    }
+}
+
+/// Cross-entropy loss forward: -sum(target * log_softmax(input)) / batch_size
+///
+/// Input: logits [B, C] (raw, unnormalized scores)
+/// Target: one-hot or probability distribution [B, C]
+/// Returns: scalar loss Variable
+pub fn cross_entropy_loss_forward(input: &Variable, target: &Variable) -> Result<Variable> {
+    let log_probs = log_softmax_forward(input, 1)?;
+    // -sum(target * log_probs) / batch_size
+    let neg_log_probs = log_probs.mul_scalar(-1.0);
+    let elementwise = neg_log_probs.mul(target)?;
+    elementwise.mean()
+}
