@@ -2726,3 +2726,105 @@ fn test_cosine_annealing_monotonic_decrease() {
         prev = lr;
     }
 }
+
+// --- Gradient Clipping Tests ---
+
+#[test]
+fn test_clip_grad_norm_no_clip_needed() {
+    // Gradient norm is small, shouldn't be clipped
+    let p = super::Parameter::new(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[1, 3]), "w");
+    let sum = p.var().sum().unwrap();
+    sum.backward().unwrap();
+
+    // grad = [1, 1, 1], norm = sqrt(3) ≈ 1.732
+    let norm = super::clip_grad_norm(&[p.clone()], 10.0);
+    assert!((norm - 3.0f32.sqrt()).abs() < 1e-4, "norm = {}", norm);
+
+    // Gradients should be unchanged
+    let g = p.grad().unwrap().to_vec_f32();
+    assert!((g[0] - 1.0).abs() < 1e-5);
+    assert!((g[1] - 1.0).abs() < 1e-5);
+    assert!((g[2] - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_clip_grad_norm_clips() {
+    let p = super::Parameter::new(Tensor::from_vec(vec![1.0, 2.0], &[1, 2]), "w");
+    let sum = p.var().sum().unwrap();
+    sum.backward().unwrap();
+    // grad = [1, 1], norm = sqrt(2) ≈ 1.414
+
+    let norm = super::clip_grad_norm(&[p.clone()], 0.5);
+    assert!((norm - 2.0f32.sqrt()).abs() < 1e-4);
+
+    // After clipping, norm should be ≈ 0.5
+    let g = p.grad().unwrap().to_vec_f32();
+    let clipped_norm = (g[0] * g[0] + g[1] * g[1]).sqrt();
+    assert!(
+        (clipped_norm - 0.5).abs() < 0.01,
+        "clipped norm = {}",
+        clipped_norm
+    );
+}
+
+#[test]
+fn test_clip_grad_norm_multiple_params() {
+    let p1 = super::Parameter::new(Tensor::from_vec(vec![3.0, 4.0], &[1, 2]), "w1");
+    let p2 = super::Parameter::new(Tensor::from_vec(vec![5.0], &[1, 1]), "w2");
+
+    let s1 = p1.var().sum().unwrap();
+    s1.backward().unwrap();
+    let s2 = p2.var().sum().unwrap();
+    s2.backward().unwrap();
+    // grad1 = [1, 1], grad2 = [1], total norm = sqrt(1+1+1) = sqrt(3)
+
+    let norm = super::clip_grad_norm(&[p1.clone(), p2.clone()], 1.0);
+    assert!((norm - 3.0f32.sqrt()).abs() < 1e-4);
+
+    // After clipping to max_norm=1.0, total norm should be ≈ 1.0
+    let g1 = p1.grad().unwrap().to_vec_f32();
+    let g2 = p2.grad().unwrap().to_vec_f32();
+    let total = (g1[0] * g1[0] + g1[1] * g1[1] + g2[0] * g2[0]).sqrt();
+    assert!((total - 1.0).abs() < 0.01, "total norm = {}", total);
+}
+
+#[test]
+fn test_clip_grad_value() {
+    let p = super::Parameter::new(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[1, 3]), "w");
+    // Set a gradient with large values
+    p.set_grad(Tensor::from_vec(vec![10.0, -5.0, 0.3], &[1, 3]));
+
+    super::clip_grad_value(&[p.clone()], 2.0);
+
+    let g = p.grad().unwrap().to_vec_f32();
+    assert!(
+        (g[0] - 2.0).abs() < 1e-5,
+        "should clip 10 to 2, got {}",
+        g[0]
+    );
+    assert!(
+        (g[1] - (-2.0)).abs() < 1e-5,
+        "should clip -5 to -2, got {}",
+        g[1]
+    );
+    assert!((g[2] - 0.3).abs() < 1e-5, "should keep 0.3, got {}", g[2]);
+}
+
+#[test]
+fn test_clip_grad_value_no_clip_needed() {
+    let p = super::Parameter::new(Tensor::from_vec(vec![1.0], &[1, 1]), "w");
+    p.set_grad(Tensor::from_vec(vec![0.5], &[1, 1]));
+
+    super::clip_grad_value(&[p.clone()], 10.0);
+
+    let g = p.grad().unwrap().to_vec_f32();
+    assert!((g[0] - 0.5).abs() < 1e-5);
+}
+
+#[test]
+fn test_clip_grad_norm_no_grad() {
+    // Parameter with no gradient — should not panic
+    let p = super::Parameter::new(Tensor::from_vec(vec![1.0], &[1, 1]), "w");
+    let norm = super::clip_grad_norm(&[p], 1.0);
+    assert!((norm - 0.0).abs() < 1e-7);
+}
