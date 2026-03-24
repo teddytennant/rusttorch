@@ -208,6 +208,16 @@ impl Variable {
     pub fn mul_scalar(&self, scalar: f32) -> Variable {
         crate::autograd::ops::mul_scalar_forward(self, scalar)
     }
+
+    /// Broadcasting addition (supports different but broadcastable shapes).
+    pub fn broadcast_add(&self, other: &Variable) -> Result<Variable> {
+        crate::autograd::ops::broadcast_add_forward(self, other)
+    }
+
+    /// Transpose a 2D variable (preserves computation graph).
+    pub fn t(&self) -> Result<Variable> {
+        crate::autograd::ops::transpose_forward(self)
+    }
 }
 
 impl fmt::Debug for Variable {
