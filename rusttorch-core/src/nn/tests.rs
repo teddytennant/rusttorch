@@ -473,6 +473,459 @@ fn test_linear_debug() {
     assert!(dbg.contains("out=5"));
 }
 
+// ---- Conv2d tests ----
+
+#[test]
+fn test_conv2d_output_shape() {
+    let conv = Conv2d::new(1, 4, 3); // 1 in, 4 out, 3x3 kernel
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 1 * 1 * 8 * 8], &[1, 1, 8, 8]),
+        false,
+    );
+    let output = conv.forward(&input).unwrap();
+    // oH = (8 - 3) / 1 + 1 = 6, oW = 6
+    assert_eq!(output.shape(), vec![1, 4, 6, 6]);
+}
+
+#[test]
+fn test_conv2d_with_padding() {
+    let conv = Conv2d::with_options(1, 4, 3, 1, 1); // padding=1
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 1 * 1 * 8 * 8], &[1, 1, 8, 8]),
+        false,
+    );
+    let output = conv.forward(&input).unwrap();
+    // oH = (8 + 2 - 3) / 1 + 1 = 8 (same padding)
+    assert_eq!(output.shape(), vec![1, 4, 8, 8]);
+}
+
+#[test]
+fn test_conv2d_with_stride() {
+    let conv = Conv2d::with_options(1, 4, 3, 2, 0); // stride=2
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 1 * 1 * 8 * 8], &[1, 1, 8, 8]),
+        false,
+    );
+    let output = conv.forward(&input).unwrap();
+    // oH = (8 - 3) / 2 + 1 = 3
+    assert_eq!(output.shape(), vec![1, 4, 3, 3]);
+}
+
+#[test]
+fn test_conv2d_batch() {
+    let conv = Conv2d::new(3, 8, 3);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.5; 4 * 3 * 10 * 10], &[4, 3, 10, 10]),
+        false,
+    );
+    let output = conv.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![4, 8, 8, 8]);
+}
+
+#[test]
+fn test_conv2d_parameters_count() {
+    let conv = Conv2d::new(3, 16, 5);
+    let params = conv.parameters();
+    assert_eq!(params.len(), 2); // weight + bias
+                                 // weight: 16 * 3 * 5 * 5 = 1200, bias: 16
+    assert_eq!(conv.num_parameters(), 1200 + 16);
+}
+
+#[test]
+fn test_conv2d_known_values() {
+    // 1x1 convolution with known weight to verify correctness
+    let conv = Conv2d::new(1, 1, 1);
+    // Set weight to 2.0, bias to 1.0
+    conv.weight
+        .update(Tensor::from_vec(vec![2.0], &[1, 1, 1, 1]));
+    conv.bias
+        .as_ref()
+        .unwrap()
+        .update(Tensor::from_vec(vec![1.0], &[1]));
+
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2]),
+        false,
+    );
+    let output = conv.forward(&input).unwrap();
+    let data = output.tensor().to_vec_f32();
+    // output = 2 * input + 1
+    assert_eq!(data, vec![3.0, 5.0, 7.0, 9.0]);
+}
+
+#[test]
+fn test_conv2d_backward() {
+    let conv = Conv2d::new(1, 2, 3);
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0; 1 * 1 * 5 * 5], &[1, 1, 5, 5]),
+        true,
+    );
+    let output = conv.forward(&input).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+
+    // Weight should have gradient
+    assert!(conv.weight.grad().is_some());
+    assert_eq!(conv.weight.grad().unwrap().shape(), &[2, 1, 3, 3]);
+
+    // Bias should have gradient
+    assert!(conv.bias.as_ref().unwrap().grad().is_some());
+
+    // Input should have gradient
+    assert!(input.grad().is_some());
+    assert_eq!(input.grad().unwrap().shape(), &[1, 1, 5, 5]);
+}
+
+#[test]
+fn test_conv2d_numerical_gradient() {
+    // Numerical gradient check for conv2d
+    let eps = 1e-4;
+
+    // Simple 1-in, 1-out, 2x2 kernel
+    let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let weight_data = vec![0.1, 0.2, 0.3, 0.4];
+
+    // Analytical gradient
+    let input_var = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 3, 3]), true);
+    let weight_var = Variable::new(Tensor::from_vec(weight_data.clone(), &[1, 1, 2, 2]), true);
+    let output = crate::autograd::ops::conv2d_forward(&input_var, &weight_var, None, 1, 0).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+    let analytical_grad = weight_var.grad().unwrap().to_vec_f32();
+
+    // Numerical gradient for each weight element
+    for i in 0..4 {
+        let mut w_plus = weight_data.clone();
+        w_plus[i] += eps;
+        let mut w_minus = weight_data.clone();
+        w_minus[i] -= eps;
+
+        let inp = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 3, 3]), false);
+        let wp = Variable::new(Tensor::from_vec(w_plus, &[1, 1, 2, 2]), false);
+        let out_p = crate::autograd::ops::conv2d_forward(&inp, &wp, None, 1, 0).unwrap();
+        let loss_p = crate::ops::sum(&out_p.tensor()) as f32;
+
+        let inp2 = Variable::new(Tensor::from_vec(input_data.clone(), &[1, 1, 3, 3]), false);
+        let wm = Variable::new(Tensor::from_vec(w_minus, &[1, 1, 2, 2]), false);
+        let out_m = crate::autograd::ops::conv2d_forward(&inp2, &wm, None, 1, 0).unwrap();
+        let loss_m = crate::ops::sum(&out_m.tensor()) as f32;
+
+        let numerical = (loss_p - loss_m) / (2.0 * eps);
+        let diff = (analytical_grad[i] - numerical).abs();
+        assert!(
+            diff < 1e-2,
+            "Weight grad[{}]: analytical={}, numerical={}, diff={}",
+            i,
+            analytical_grad[i],
+            numerical,
+            diff
+        );
+    }
+}
+
+// ---- MaxPool2d tests ----
+
+#[test]
+fn test_maxpool2d_output_shape() {
+    let pool = MaxPool2d::new(2);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 1 * 1 * 4 * 4], &[1, 1, 4, 4]),
+        false,
+    );
+    let output = pool.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 1, 2, 2]);
+}
+
+#[test]
+fn test_maxpool2d_values() {
+    let pool = MaxPool2d::new(2);
+    #[rustfmt::skip]
+    let data = vec![
+        1.0, 2.0, 3.0, 4.0,
+        5.0, 6.0, 7.0, 8.0,
+        9.0, 10.0, 11.0, 12.0,
+        13.0, 14.0, 15.0, 16.0,
+    ];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 1, 4, 4]), false);
+    let output = pool.forward(&input).unwrap();
+    let result = output.tensor().to_vec_f32();
+    // Max of each 2x2 block
+    assert_eq!(result, vec![6.0, 8.0, 14.0, 16.0]);
+}
+
+#[test]
+fn test_maxpool2d_backward() {
+    let pool = MaxPool2d::new(2);
+    #[rustfmt::skip]
+    let data = vec![
+        1.0, 2.0, 3.0, 4.0,
+        5.0, 6.0, 7.0, 8.0,
+        9.0, 10.0, 11.0, 12.0,
+        13.0, 14.0, 15.0, 16.0,
+    ];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 1, 4, 4]), true);
+    let output = pool.forward(&input).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+
+    let grad = input.grad().unwrap().to_vec_f32();
+    // Gradients should only be at max positions (6, 8, 14, 16)
+    // Position 5 (idx 5), 7 (idx 7), 13 (idx 13), 15 (idx 15)
+    assert_eq!(grad[5], 1.0); // position of 6.0
+    assert_eq!(grad[7], 1.0); // position of 8.0
+    assert_eq!(grad[13], 1.0); // position of 14.0
+    assert_eq!(grad[15], 1.0); // position of 16.0
+                               // Non-max positions should be 0
+    assert_eq!(grad[0], 0.0);
+    assert_eq!(grad[4], 0.0);
+}
+
+#[test]
+fn test_maxpool2d_no_parameters() {
+    let pool = MaxPool2d::new(2);
+    assert!(pool.parameters().is_empty());
+}
+
+#[test]
+fn test_maxpool2d_with_stride() {
+    let pool = MaxPool2d::with_stride(3, 1); // overlapping pools
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 1 * 1 * 5 * 5], &[1, 1, 5, 5]),
+        false,
+    );
+    let output = pool.forward(&input).unwrap();
+    // oH = (5 - 3) / 1 + 1 = 3
+    assert_eq!(output.shape(), vec![1, 1, 3, 3]);
+}
+
+// ---- Flatten tests ----
+
+#[test]
+fn test_flatten_4d() {
+    let flatten = Flatten::new();
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.0; 2 * 3 * 4 * 5], &[2, 3, 4, 5]),
+        false,
+    );
+    let output = flatten.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![2, 60]); // 3*4*5 = 60
+}
+
+#[test]
+fn test_flatten_already_flat() {
+    let flatten = Flatten::new();
+    let input = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[1, 3]), false);
+    let output = flatten.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 3]);
+}
+
+#[test]
+fn test_flatten_backward() {
+    let flatten = Flatten::new();
+    let input = Variable::new(
+        Tensor::from_vec(vec![1.0; 1 * 2 * 3 * 3], &[1, 2, 3, 3]),
+        true,
+    );
+    let output = flatten.forward(&input).unwrap();
+    assert_eq!(output.shape(), vec![1, 18]);
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+    // Gradient should be 1.0 everywhere, reshaped back to original shape
+    let grad = input.grad().unwrap();
+    assert_eq!(grad.shape(), &[1, 2, 3, 3]);
+}
+
+#[test]
+fn test_flatten_no_parameters() {
+    let flatten = Flatten::new();
+    assert!(flatten.parameters().is_empty());
+}
+
+// ---- Reshape autograd tests ----
+
+#[test]
+fn test_reshape_forward() {
+    let x = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]),
+        true,
+    );
+    let y = x.reshape(&[3, 2]).unwrap();
+    assert_eq!(y.shape(), vec![3, 2]);
+    let data = y.tensor().to_vec_f32();
+    assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn test_reshape_backward() {
+    let x = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]), true);
+    let y = x.reshape(&[4]).unwrap();
+    let loss = y.sum().unwrap();
+    loss.backward().unwrap();
+    let grad = x.grad().unwrap();
+    assert_eq!(grad.shape(), &[2, 2]); // gradient reshaped back
+    assert_eq!(grad.to_vec_f32(), vec![1.0, 1.0, 1.0, 1.0]);
+}
+
+// ---- CNN integration tests ----
+
+#[test]
+fn test_conv_pool_flatten_pipeline() {
+    // Test the full CNN pipeline: Conv2d -> ReLU -> MaxPool2d -> Flatten -> Linear
+    let conv = Conv2d::new(1, 4, 3); // [1, 1, 8, 8] -> [1, 4, 6, 6]
+    let relu = ReLU::new();
+    let pool = MaxPool2d::new(2); // [1, 4, 6, 6] -> [1, 4, 3, 3]
+    let flatten = Flatten::new(); // [1, 4, 3, 3] -> [1, 36]
+    let fc = Linear::new(36, 2); // [1, 36] -> [1, 2]
+
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 64], &[1, 1, 8, 8]), true);
+    let x = conv.forward(&input).unwrap();
+    assert_eq!(x.shape(), vec![1, 4, 6, 6]);
+    let x = relu.forward(&x).unwrap();
+    let x = pool.forward(&x).unwrap();
+    assert_eq!(x.shape(), vec![1, 4, 3, 3]);
+    let x = flatten.forward(&x).unwrap();
+    assert_eq!(x.shape(), vec![1, 36]);
+    let x = fc.forward(&x).unwrap();
+    assert_eq!(x.shape(), vec![1, 2]);
+}
+
+#[test]
+fn test_cnn_backward() {
+    // Full backward through CNN pipeline
+    let conv = Conv2d::new(1, 2, 3);
+    let pool = MaxPool2d::new(2);
+    let flatten = Flatten::new();
+    let fc = Linear::new(2, 1); // After conv 5x5->3x3, pool->1x1, 2 channels = 2
+
+    let input = Variable::new(Tensor::from_vec(vec![1.0; 25], &[1, 1, 5, 5]), true);
+    let x = conv.forward(&input).unwrap();
+    let x = x.relu();
+    let x = pool.forward(&x).unwrap();
+    let x = flatten.forward(&x).unwrap();
+    let x = fc.forward(&x).unwrap();
+    let loss = x.sum().unwrap();
+    loss.backward().unwrap();
+
+    // Conv weight should have gradient
+    assert!(conv.weight.grad().is_some());
+    // FC weight should have gradient
+    assert!(fc.weight.grad().is_some());
+    // Input should have gradient
+    assert!(input.grad().is_some());
+}
+
+#[test]
+fn test_cnn_training_synthetic() {
+    // Train a tiny CNN to distinguish two synthetic patterns:
+    // Pattern A (label 0): all zeros
+    // Pattern B (label 1): all ones
+    // This is trivially separable — the CNN should learn it fast.
+
+    let conv = Conv2d::new(1, 2, 3); // [B, 1, 5, 5] -> [B, 2, 3, 3]
+    let pool = MaxPool2d::new(3); // [B, 2, 3, 3] -> [B, 2, 1, 1]
+    let flatten = Flatten::new(); // [B, 2, 1, 1] -> [B, 2]
+    let fc = Linear::new(2, 1); // [B, 2] -> [B, 1]
+
+    let loss_fn = MSELoss::new();
+
+    let mut all_params = vec![];
+    all_params.extend(conv.parameters());
+    all_params.extend(fc.parameters());
+    let mut optimizer = Adam::new(all_params, 0.02);
+
+    let pattern_a = vec![0.0f32; 25]; // all zeros
+    let pattern_b = vec![1.0f32; 25]; // all ones
+
+    let mut last_loss = f32::MAX;
+
+    for _epoch in 0..200 {
+        let mut epoch_loss = 0.0;
+
+        for (pattern, target_val) in [(&pattern_a, 0.0f32), (&pattern_b, 1.0f32)] {
+            optimizer.zero_grad();
+
+            let input = Variable::new(Tensor::from_vec(pattern.clone(), &[1, 1, 5, 5]), false);
+            let target = Variable::new(Tensor::from_vec(vec![target_val], &[1, 1]), false);
+
+            let x = conv.forward(&input).unwrap();
+            let x = x.relu();
+            let x = pool.forward(&x).unwrap();
+            let x = flatten.forward(&x).unwrap();
+            let x = fc.forward(&x).unwrap();
+            let x = x.sigmoid().unwrap();
+
+            let loss = loss_fn.forward(&x, &target).unwrap();
+            epoch_loss += loss.tensor().to_vec_f32()[0];
+
+            loss.backward().unwrap();
+            optimizer.step().unwrap();
+        }
+
+        last_loss = epoch_loss / 2.0;
+    }
+
+    assert!(
+        last_loss < 0.1,
+        "CNN should learn synthetic patterns, but final loss = {}",
+        last_loss
+    );
+
+    // Verify predictions
+    let input_a = Variable::new(Tensor::from_vec(pattern_a, &[1, 1, 5, 5]), false);
+    let x = conv.forward(&input_a).unwrap();
+    let x = x.relu();
+    let x = pool.forward(&x).unwrap();
+    let x = flatten.forward(&x).unwrap();
+    let x = fc.forward(&x).unwrap();
+    let pred_a = x.sigmoid().unwrap().tensor().to_vec_f32()[0];
+
+    let input_b = Variable::new(Tensor::from_vec(pattern_b, &[1, 1, 5, 5]), false);
+    let x = conv.forward(&input_b).unwrap();
+    let x = x.relu();
+    let x = pool.forward(&x).unwrap();
+    let x = flatten.forward(&x).unwrap();
+    let x = fc.forward(&x).unwrap();
+    let pred_b = x.sigmoid().unwrap().tensor().to_vec_f32()[0];
+
+    assert!(
+        pred_a < 0.3,
+        "Pattern A (zeros) should predict ~0, got {}",
+        pred_a
+    );
+    assert!(
+        pred_b > 0.7,
+        "Pattern B (ones) should predict ~1, got {}",
+        pred_b
+    );
+}
+
+// ---- Debug format tests ----
+
+#[test]
+fn test_conv2d_debug() {
+    let conv = Conv2d::with_options(3, 16, 5, 2, 1);
+    let dbg = format!("{:?}", conv);
+    assert!(dbg.contains("Conv2d"));
+    assert!(dbg.contains("in=3"));
+    assert!(dbg.contains("out=16"));
+    assert!(dbg.contains("kernel=5"));
+}
+
+#[test]
+fn test_maxpool2d_debug() {
+    let pool = MaxPool2d::new(2);
+    let dbg = format!("{:?}", pool);
+    assert!(dbg.contains("MaxPool2d"));
+    assert!(dbg.contains("kernel_size=2"));
+}
+
+#[test]
+fn test_flatten_debug() {
+    let flatten = Flatten::new();
+    let dbg = format!("{:?}", flatten);
+    assert!(dbg.contains("Flatten"));
+}
+
 // ---- XOR learning test (the classic) ----
 
 #[test]
