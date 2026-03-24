@@ -7,6 +7,109 @@
 use crate::autograd::variable::Variable;
 use crate::error::{Result, TensorError};
 use crate::tensor::Tensor;
+use ndarray::{Array2, ArrayView2};
+
+// ---- im2col / col2im utilities for efficient convolution ----
+
+/// im2col: Extract sliding windows from a single image into a column matrix.
+/// Input: flat slice for one image [C_in, H, W]
+/// Output: column matrix [C_in*kH*kW, OH*OW] (row-major flat)
+#[allow(clippy::too_many_arguments)]
+fn im2col(
+    input: &[f32],
+    c_in: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    padding: usize,
+) -> Vec<f32> {
+    let oh = (ih + 2 * padding - kh) / stride + 1;
+    let ow = (iw + 2 * padding - kw) / stride + 1;
+    let col_h = c_in * kh * kw;
+    let col_w = oh * ow;
+    let mut col = vec![0.0f32; col_h * col_w];
+
+    for ci in 0..c_in {
+        for ky in 0..kh {
+            for kx in 0..kw {
+                let col_row = ci * kh * kw + ky * kw + kx;
+                let row_offset = col_row * col_w;
+                for oy in 0..oh {
+                    let iy = (oy * stride + ky) as isize - padding as isize;
+                    if iy < 0 || iy >= ih as isize {
+                        // Entire row of ox values is zero (padding)
+                        continue;
+                    }
+                    let iy = iy as usize;
+                    let input_row_offset = ci * ih * iw + iy * iw;
+                    for ox in 0..ow {
+                        let ix = (ox * stride + kx) as isize - padding as isize;
+                        if ix >= 0 && ix < iw as isize {
+                            col[row_offset + oy * ow + ox] =
+                                input[input_row_offset + ix as usize];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    col
+}
+
+/// col2im: Scatter-add column matrix back to image shape (inverse of im2col).
+/// col: flat [C_in*kH*kW, OH*OW], output: flat [C_in, H, W]
+#[allow(clippy::too_many_arguments)]
+fn col2im(
+    col: &[f32],
+    c_in: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    padding: usize,
+) -> Vec<f32> {
+    let oh = (ih + 2 * padding - kh) / stride + 1;
+    let ow = (iw + 2 * padding - kw) / stride + 1;
+    let col_w = oh * ow;
+    let mut img = vec![0.0f32; c_in * ih * iw];
+
+    for ci in 0..c_in {
+        for ky in 0..kh {
+            for kx in 0..kw {
+                let col_row = ci * kh * kw + ky * kw + kx;
+                let row_offset = col_row * col_w;
+                for oy in 0..oh {
+                    let iy = (oy * stride + ky) as isize - padding as isize;
+                    if iy < 0 || iy >= ih as isize {
+                        continue;
+                    }
+                    let iy = iy as usize;
+                    let img_row_offset = ci * ih * iw + iy * iw;
+                    for ox in 0..ow {
+                        let ix = (ox * stride + kx) as isize - padding as isize;
+                        if ix >= 0 && ix < iw as isize {
+                            img[img_row_offset + ix as usize] +=
+                                col[row_offset + oy * ow + ox];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    img
+}
+
+/// 2D matrix multiply using ndarray's optimized dot (BLAS-backed).
+/// a: [m, k], b: [k, n] → result: [m, n], all row-major flat.
+fn matmul_2d(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+    let a_mat = ArrayView2::from_shape((m, k), a).unwrap();
+    let b_mat = ArrayView2::from_shape((k, n), b).unwrap();
+    let c: Array2<f32> = a_mat.dot(&b_mat);
+    c.into_raw_vec()
+}
 
 /// Trait for backward functions in the computation graph.
 ///
@@ -758,83 +861,85 @@ impl GradFn for Conv2dSavedState {
         let oh = (ih + 2 * pad - kh) / stride + 1;
         let ow = (iw + 2 * pad - kw) / stride + 1;
 
-        // grad_weight[co, ci, kh_, kw_] = sum_{b, oh_, ow_} grad[b,co,oh_,ow_] * input[b,ci,oh_*s+kh_-p,ow_*s+kw_-p]
-        let grad_weight = if self.weight.requires_grad() {
-            let mut gw = vec![0.0f32; c_out * c_in * kh * kw];
-            for bi in 0..b {
-                for co in 0..c_out {
-                    for ci in 0..c_in {
-                        for ky in 0..kh {
-                            for kx in 0..kw {
-                                let mut sum = 0.0f32;
-                                for oy in 0..oh {
-                                    for ox in 0..ow {
-                                        let iy = oy * stride + ky;
-                                        let ix = ox * stride + kx;
-                                        let iy_orig = iy as isize - pad as isize;
-                                        let ix_orig = ix as isize - pad as isize;
-                                        let g = grad_data
-                                            [bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
-                                        if iy_orig >= 0
-                                            && iy_orig < ih as isize
-                                            && ix_orig >= 0
-                                            && ix_orig < iw as isize
-                                        {
-                                            let inp_idx = bi * c_in * ih * iw
-                                                + ci * ih * iw
-                                                + iy_orig as usize * iw
-                                                + ix_orig as usize;
-                                            sum += g * input_data[inp_idx];
-                                        }
-                                    }
-                                }
-                                gw[co * c_in * kh * kw + ci * kh * kw + ky * kw + kx] += sum;
-                            }
-                        }
-                    }
+        let k_dim = c_in * kh * kw;
+        let spatial = oh * ow;
+        let img_size = c_in * ih * iw;
+        let grad_batch_size = c_out * spatial;
+
+        let need_weight_grad = self.weight.requires_grad();
+        let need_input_grad = self.input.requires_grad();
+
+        // Accumulate grad_weight across batches
+        let mut gw = if need_weight_grad {
+            vec![0.0f32; c_out * k_dim]
+        } else {
+            vec![]
+        };
+
+        let mut gi = if need_input_grad {
+            vec![0.0f32; b * img_size]
+        } else {
+            vec![]
+        };
+
+        // Hoist weight transpose out of batch loop (constant across batches)
+        let w_t_data: Vec<f32> = if need_input_grad {
+            let w_mat = ArrayView2::from_shape((c_out, k_dim), &weight_data).unwrap();
+            let w_t: Array2<f32> = w_mat.t().to_owned();
+            // Force C-contiguous layout
+            w_t.as_standard_layout().to_owned().into_raw_vec()
+        } else {
+            vec![]
+        };
+
+        for bi in 0..b {
+            let img_start = bi * img_size;
+            let grad_start = bi * grad_batch_size;
+            let grad_batch = &grad_data[grad_start..grad_start + grad_batch_size];
+
+            // Recompute im2col for this batch (same as forward, avoids storing columns)
+            let col = if need_weight_grad || need_input_grad {
+                im2col(
+                    &input_data[img_start..img_start + img_size],
+                    c_in, ih, iw, kh, kw, stride, pad,
+                )
+            } else {
+                vec![]
+            };
+
+            // grad_weight += grad_out[b] @ col^T
+            // grad_out[b]: [C_out, spatial], col: [k_dim, spatial]
+            // result: [C_out, k_dim]
+            if need_weight_grad {
+                let grad_mat = ArrayView2::from_shape((c_out, spatial), grad_batch).unwrap();
+                let col_mat = ArrayView2::from_shape((k_dim, spatial), &col).unwrap();
+                let gw_batch: Array2<f32> = grad_mat.dot(&col_mat.t());
+                let gw_slice = gw_batch.as_slice().unwrap();
+                for i in 0..gw.len() {
+                    gw[i] += gw_slice[i];
                 }
             }
+
+            // grad_input: col_grad = weight^T @ grad_out[b] → col2im
+            // weight^T: [k_dim, C_out] (precomputed), grad_out[b]: [C_out, spatial]
+            // col_grad: [k_dim, spatial]
+            if need_input_grad {
+                let col_grad = matmul_2d(&w_t_data, grad_batch, k_dim, c_out, spatial);
+                let gi_batch = col2im(&col_grad, c_in, ih, iw, kh, kw, stride, pad);
+                let gi_start = bi * img_size;
+                for i in 0..img_size {
+                    gi[gi_start + i] += gi_batch[i];
+                }
+            }
+        }
+
+        let grad_weight = if need_weight_grad {
             Some(Tensor::from_vec(gw, &[c_out, c_in, kh, kw]))
         } else {
             None
         };
 
-        // grad_input[b, ci, iy, ix] = sum_{co, ky, kx} grad[b,co,(iy+p-ky)/s,(ix+p-kx)/s] * w[co,ci,ky,kx]
-        // where (iy+p-ky) % s == 0 and (ix+p-kx) % s == 0
-        let grad_input = if self.input.requires_grad() {
-            let mut gi = vec![0.0f32; b * c_in * ih * iw];
-            for bi in 0..b {
-                for co in 0..c_out {
-                    for oy in 0..oh {
-                        for ox in 0..ow {
-                            let g = grad_data[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
-                            for ky in 0..kh {
-                                for kx in 0..kw {
-                                    let iy = oy * stride + ky;
-                                    let ix = ox * stride + kx;
-                                    let iy_orig = iy as isize - pad as isize;
-                                    let ix_orig = ix as isize - pad as isize;
-                                    if iy_orig >= 0
-                                        && iy_orig < ih as isize
-                                        && ix_orig >= 0
-                                        && ix_orig < iw as isize
-                                    {
-                                        for ci in 0..c_in {
-                                            let w_idx =
-                                                co * c_in * kh * kw + ci * kh * kw + ky * kw + kx;
-                                            let i_idx = bi * c_in * ih * iw
-                                                + ci * ih * iw
-                                                + iy_orig as usize * iw
-                                                + ix_orig as usize;
-                                            gi[i_idx] += g * weight_data[w_idx];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let grad_input = if need_input_grad {
             Some(Tensor::from_vec(gi, &[b, c_in, ih, iw]))
         } else {
             None
@@ -845,12 +950,10 @@ impl GradFn for Conv2dSavedState {
             if bias_var.requires_grad() {
                 let mut gb = vec![0.0f32; c_out];
                 for bi in 0..b {
-                    for co in 0..c_out {
-                        for oy in 0..oh {
-                            for ox in 0..ow {
-                                gb[co] +=
-                                    grad_data[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox];
-                            }
+                    for (co, gb_co) in gb.iter_mut().enumerate() {
+                        let start = bi * grad_batch_size + co * spatial;
+                        for s in 0..spatial {
+                            *gb_co += grad_data[start + s];
                         }
                     }
                 }
@@ -878,8 +981,12 @@ impl GradFn for Conv2dSavedState {
     }
 }
 
-/// Conv2d forward pass.
+/// Conv2d forward pass using im2col + matrix multiplication.
 /// input: [B, C_in, H, W], weight: [C_out, C_in, kH, kW], bias: Option<[C_out]>
+///
+/// Algorithm: For each batch element:
+///   col = im2col(input[b]) → [C_in*kH*kW, OH*OW]
+///   out[b] = weight_mat @ col → [C_out, OH*OW] → reshape to [C_out, OH, OW]
 pub fn conv2d_forward(
     input: &Variable,
     weight: &Variable,
@@ -934,42 +1041,36 @@ pub fn conv2d_forward(
     let weight_data = weight_tensor.to_vec_f32();
     let bias_data = bias.map(|b| b.tensor().to_vec_f32());
 
-    let mut output = vec![0.0f32; batch * c_out * oh * ow];
+    // weight_mat: [C_out, C_in*kH*kW] — just a reshape, same data
+    let k_dim = c_in * kh * kw;
+    let spatial = oh * ow;
+    let mut output = vec![0.0f32; batch * c_out * spatial];
+
+    let img_size = c_in * ih * iw;
+    let out_size = c_out * spatial;
 
     for bi in 0..batch {
-        for co in 0..c_out {
-            for oy in 0..oh {
-                for ox in 0..ow {
-                    let mut sum = if let Some(ref bd) = bias_data {
-                        bd[co]
-                    } else {
-                        0.0
-                    };
-                    for ci in 0..c_in {
-                        for ky in 0..kh {
-                            for kx in 0..kw {
-                                let iy = oy * stride + ky;
-                                let ix = ox * stride + kx;
-                                let iy_orig = iy as isize - padding as isize;
-                                let ix_orig = ix as isize - padding as isize;
-                                if iy_orig >= 0
-                                    && iy_orig < ih as isize
-                                    && ix_orig >= 0
-                                    && ix_orig < iw as isize
-                                {
-                                    let inp_idx = bi * c_in * ih * iw
-                                        + ci * ih * iw
-                                        + iy_orig as usize * iw
-                                        + ix_orig as usize;
-                                    let w_idx = co * c_in * kh * kw + ci * kh * kw + ky * kw + kx;
-                                    sum += input_data[inp_idx] * weight_data[w_idx];
-                                }
-                            }
-                        }
-                    }
-                    output[bi * c_out * oh * ow + co * oh * ow + oy * ow + ox] = sum;
+        // im2col: extract patches → [C_in*kH*kW, OH*OW]
+        let img_start = bi * img_size;
+        let col = im2col(
+            &input_data[img_start..img_start + img_size],
+            c_in, ih, iw, kh, kw, stride, padding,
+        );
+
+        // matmul: weight_mat[C_out, k_dim] @ col[k_dim, spatial] → [C_out, spatial]
+        let out_batch = matmul_2d(&weight_data, &col, c_out, k_dim, spatial);
+
+        // Copy to output + add bias
+        let out_start = bi * out_size;
+        if let Some(ref bd) = bias_data {
+            for (co, &bias_val) in bd.iter().enumerate() {
+                let row_start = co * spatial;
+                for s in 0..spatial {
+                    output[out_start + row_start + s] = out_batch[row_start + s] + bias_val;
                 }
             }
+        } else {
+            output[out_start..out_start + out_size].copy_from_slice(&out_batch);
         }
     }
 
@@ -1852,5 +1953,116 @@ pub fn adaptive_avg_pool2d_forward(
         ))
     } else {
         Ok(Variable::detach(result))
+    }
+}
+
+#[cfg(test)]
+mod im2col_tests {
+    use super::*;
+
+    #[test]
+    fn test_im2col_no_padding() {
+        // 1 channel, 3x3 input, 2x2 kernel, stride 1, no padding
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let col = im2col(&input, 1, 3, 3, 2, 2, 1, 0);
+        assert_eq!(col.len(), 16);
+        assert_eq!(&col[0..4], &[1.0, 2.0, 4.0, 5.0]);
+        assert_eq!(&col[4..8], &[2.0, 3.0, 5.0, 6.0]);
+        assert_eq!(&col[8..12], &[4.0, 5.0, 7.0, 8.0]);
+        assert_eq!(&col[12..16], &[5.0, 6.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn test_im2col_with_padding() {
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let col = im2col(&input, 1, 2, 2, 3, 3, 1, 1);
+        assert_eq!(col.len(), 36);
+        assert_eq!(col[0], 0.0);
+        assert_eq!(col[1], 0.0);
+    }
+
+    #[test]
+    fn test_im2col_stride() {
+        let input: Vec<f32> = (1..=16).map(|x| x as f32).collect();
+        let col = im2col(&input, 1, 4, 4, 2, 2, 2, 0);
+        assert_eq!(col.len(), 16);
+        assert_eq!(&col[0..4], &[1.0, 3.0, 9.0, 11.0]);
+    }
+
+    #[test]
+    fn test_im2col_multichannel() {
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let col = im2col(&input, 2, 2, 2, 2, 2, 1, 0);
+        assert_eq!(col, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn test_col2im_no_overlap() {
+        let input: Vec<f32> = (1..=16).map(|x| x as f32).collect();
+        let col = im2col(&input, 1, 4, 4, 2, 2, 2, 0);
+        let reconstructed = col2im(&col, 1, 4, 4, 2, 2, 2, 0);
+        assert_eq!(input, reconstructed);
+    }
+
+    #[test]
+    fn test_col2im_overlap_accumulates() {
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let col = im2col(&input, 1, 3, 3, 2, 2, 1, 0);
+        let reconstructed = col2im(&col, 1, 3, 3, 2, 2, 1, 0);
+        // corners: 1 patch, edges: 2 patches, center: 4 patches
+        assert_eq!(reconstructed[0], 1.0);
+        assert_eq!(reconstructed[1], 4.0);
+        assert_eq!(reconstructed[2], 3.0);
+        assert_eq!(reconstructed[4], 20.0);
+        assert_eq!(reconstructed[8], 9.0);
+    }
+
+    #[test]
+    fn test_matmul_2d_basic() {
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+        let c = matmul_2d(&a, &b, 2, 3, 2);
+        assert_eq!(c, vec![58.0, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn test_im2col_conv_equivalence() {
+        // Verify im2col+matmul = direct convolution
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let weight = vec![1.0, 0.0, 0.0, 1.0];
+
+        // Direct conv: sum of diagonal elements in each 2x2 window
+        let direct = vec![
+            1.0 * 1.0 + 2.0 * 0.0 + 4.0 * 0.0 + 5.0 * 1.0, // = 6
+            2.0 * 1.0 + 3.0 * 0.0 + 5.0 * 0.0 + 6.0 * 1.0, // = 8
+            4.0 * 1.0 + 5.0 * 0.0 + 7.0 * 0.0 + 8.0 * 1.0, // = 12
+            5.0 * 1.0 + 6.0 * 0.0 + 8.0 * 0.0 + 9.0 * 1.0, // = 14
+        ];
+
+        let col = im2col(&input, 1, 3, 3, 2, 2, 1, 0);
+        let result = matmul_2d(&weight, &col, 1, 4, 4);
+
+        assert_eq!(direct, result);
+    }
+
+    #[test]
+    fn test_im2col_1x1_kernel() {
+        // 1x1 kernel: col should just be the input reshaped
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let col = im2col(&input, 2, 2, 2, 1, 1, 1, 0);
+        // [2*1*1, 2*2] = [2, 4]
+        assert_eq!(col, input);
+    }
+
+    #[test]
+    fn test_col2im_with_padding() {
+        // Round-trip with padding
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let col = im2col(&input, 1, 2, 2, 2, 2, 1, 1);
+        // oh = (2+2-2)/1+1 = 3, ow = 3 → col is [4, 9]
+        let restored = col2im(&col, 1, 2, 2, 2, 2, 1, 1);
+        // Each input position gets accumulated from multiple patches
+        // Just verify shape is correct
+        assert_eq!(restored.len(), 4);
     }
 }
