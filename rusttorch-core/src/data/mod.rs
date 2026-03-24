@@ -7,10 +7,12 @@
 //! - Train/val/test splitting
 //! - IDX binary format parsing (MNIST)
 //! - MNIST dataset loading (with `datasets` feature)
+//! - BPE tokenizer (GPT-2 style byte-level BPE)
 
 pub mod cifar10;
 pub mod idx;
 pub mod mnist;
+pub mod tokenizer;
 pub mod transforms;
 
 use crate::tensor::{Tensor, TensorData};
