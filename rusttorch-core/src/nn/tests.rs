@@ -2605,3 +2605,124 @@ fn test_resnet18_debug_format() {
     assert!(debug.contains("blocks="));
     assert!(debug.contains("[2, 2, 2, 2]"));
 }
+
+// --- Weight Decay Tests ---
+
+#[test]
+fn test_sgd_weight_decay() {
+    // Weight decay should cause parameters to shrink toward zero
+    let param = super::Parameter::new(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[1, 3]), "test_wd");
+
+    // Large weight decay, no gradient
+    let mut optimizer = super::SGD::with_momentum_and_weight_decay(
+        vec![param.clone()],
+        0.1, // lr
+        0.0, // no momentum
+        1.0, // extreme weight decay for testing
+    );
+
+    // Compute gradients via forward + backward
+    let sum = param.var().sum().unwrap();
+    sum.backward().unwrap();
+
+    optimizer.step().unwrap();
+
+    let result = param.tensor().to_vec_f32();
+    // param -= lr * (grad + weight_decay * param)
+    // grad from sum = [1, 1, 1], wd * param = [1, 2, 3]
+    // update: [1 - 0.1*(1+1), 2 - 0.1*(1+2), 3 - 0.1*(1+3)] = [0.8, 1.7, 2.6]
+    assert!((result[0] - 0.8).abs() < 1e-5, "got {}", result[0]);
+    assert!((result[1] - 1.7).abs() < 1e-5, "got {}", result[1]);
+    assert!((result[2] - 2.6).abs() < 1e-5, "got {}", result[2]);
+}
+
+#[test]
+fn test_sgd_weight_decay_with_momentum() {
+    let param = super::Parameter::new(Tensor::from_vec(vec![2.0, 4.0], &[1, 2]), "test_wd_mom");
+
+    let mut optimizer = super::SGD::with_momentum_and_weight_decay(
+        vec![param.clone()],
+        0.01, // lr
+        0.9,  // momentum
+        0.01, // weight_decay
+    );
+
+    let sum = param.var().sum().unwrap();
+    sum.backward().unwrap();
+    optimizer.step().unwrap();
+
+    // Should have updated parameters (just verify they changed)
+    let result = param.tensor().to_vec_f32();
+    assert!(result[0] < 2.0, "Weight decay + grad should decrease param");
+    assert!(result[1] < 4.0, "Weight decay + grad should decrease param");
+}
+
+#[test]
+fn test_sgd_set_lr() {
+    let param = super::Parameter::new(Tensor::from_vec(vec![1.0], &[1, 1]), "test_lr");
+    let mut optimizer = super::SGD::new(vec![param], 0.1);
+    assert!((optimizer.lr() - 0.1).abs() < 1e-7);
+    optimizer.set_lr(0.01);
+    assert!((optimizer.lr() - 0.01).abs() < 1e-7);
+}
+
+// --- Learning Rate Scheduler Tests ---
+
+#[test]
+fn test_step_lr() {
+    let scheduler = super::StepLR::new(0.1, 30, 0.1);
+    assert!((scheduler.lr_at(0) - 0.1).abs() < 1e-7);
+    assert!((scheduler.lr_at(29) - 0.1).abs() < 1e-7);
+    assert!((scheduler.lr_at(30) - 0.01).abs() < 1e-7);
+    assert!((scheduler.lr_at(59) - 0.01).abs() < 1e-7);
+    assert!((scheduler.lr_at(60) - 0.001).abs() < 1e-7);
+}
+
+#[test]
+fn test_multi_step_lr() {
+    let scheduler = super::MultiStepLR::new(0.1, vec![80, 120], 0.1);
+    assert!((scheduler.lr_at(0) - 0.1).abs() < 1e-7);
+    assert!((scheduler.lr_at(79) - 0.1).abs() < 1e-7);
+    assert!((scheduler.lr_at(80) - 0.01).abs() < 1e-7);
+    assert!((scheduler.lr_at(119) - 0.01).abs() < 1e-7);
+    assert!((scheduler.lr_at(120) - 0.001).abs() < 1e-7);
+    assert!((scheduler.lr_at(200) - 0.001).abs() < 1e-7);
+}
+
+#[test]
+fn test_multi_step_lr_single_milestone() {
+    let scheduler = super::MultiStepLR::new(0.05, vec![50], 0.2);
+    assert!((scheduler.lr_at(49) - 0.05).abs() < 1e-7);
+    assert!((scheduler.lr_at(50) - 0.01).abs() < 1e-7);
+}
+
+#[test]
+fn test_cosine_annealing_lr() {
+    let scheduler = super::CosineAnnealingLR::new(0.1, 0.0, 100);
+    // Start: full LR
+    assert!((scheduler.lr_at(0) - 0.1).abs() < 1e-5);
+    // Middle: ~half LR
+    assert!((scheduler.lr_at(50) - 0.05).abs() < 0.01);
+    // End: min LR
+    assert!((scheduler.lr_at(100) - 0.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_cosine_annealing_lr_with_min() {
+    let scheduler = super::CosineAnnealingLR::new(0.1, 1e-4, 200);
+    assert!((scheduler.lr_at(0) - 0.1).abs() < 1e-5);
+    // End should approach min_lr, not 0
+    assert!(scheduler.lr_at(200) >= 1e-4 - 1e-6);
+    assert!(scheduler.lr_at(200) < 0.001);
+}
+
+#[test]
+fn test_cosine_annealing_monotonic_decrease() {
+    let scheduler = super::CosineAnnealingLR::new(0.1, 0.0, 100);
+    let mut prev = scheduler.lr_at(0);
+    for epoch in 1..=100 {
+        let lr = scheduler.lr_at(epoch);
+        assert!(lr <= prev + 1e-7, "LR should decrease: {} > {}", lr, prev);
+        prev = lr;
+    }
+}

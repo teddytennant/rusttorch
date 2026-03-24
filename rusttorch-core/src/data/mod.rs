@@ -11,6 +11,7 @@
 pub mod cifar10;
 pub mod idx;
 pub mod mnist;
+pub mod transforms;
 
 use crate::tensor::{Tensor, TensorData};
 use crate::DType;

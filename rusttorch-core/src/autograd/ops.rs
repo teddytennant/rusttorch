@@ -47,8 +47,7 @@ fn im2col(
                     for ox in 0..ow {
                         let ix = (ox * stride + kx) as isize - padding as isize;
                         if ix >= 0 && ix < iw as isize {
-                            col[row_offset + oy * ow + ox] =
-                                input[input_row_offset + ix as usize];
+                            col[row_offset + oy * ow + ox] = input[input_row_offset + ix as usize];
                         }
                     }
                 }
@@ -91,8 +90,7 @@ fn col2im(
                     for ox in 0..ow {
                         let ix = (ox * stride + kx) as isize - padding as isize;
                         if ix >= 0 && ix < iw as isize {
-                            img[img_row_offset + ix as usize] +=
-                                col[row_offset + oy * ow + ox];
+                            img[img_row_offset + ix as usize] += col[row_offset + oy * ow + ox];
                         }
                     }
                 }
@@ -901,7 +899,13 @@ impl GradFn for Conv2dSavedState {
             let col = if need_weight_grad || need_input_grad {
                 im2col(
                     &input_data[img_start..img_start + img_size],
-                    c_in, ih, iw, kh, kw, stride, pad,
+                    c_in,
+                    ih,
+                    iw,
+                    kh,
+                    kw,
+                    stride,
+                    pad,
                 )
             } else {
                 vec![]
@@ -1054,7 +1058,13 @@ pub fn conv2d_forward(
         let img_start = bi * img_size;
         let col = im2col(
             &input_data[img_start..img_start + img_size],
-            c_in, ih, iw, kh, kw, stride, padding,
+            c_in,
+            ih,
+            iw,
+            kh,
+            kw,
+            stride,
+            padding,
         );
 
         // matmul: weight_mat[C_out, k_dim] @ col[k_dim, spatial] → [C_out, spatial]
