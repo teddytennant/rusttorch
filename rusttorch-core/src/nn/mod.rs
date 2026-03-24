@@ -62,7 +62,7 @@ pub use flatten::Flatten;
 pub use linear::Linear;
 pub use loss::{CrossEntropyLoss, MSELoss};
 pub use module::Module;
-pub use optim::{Adam, Optimizer, SGD};
+pub use optim::{Adam, CosineAnnealingLR, MultiStepLR, Optimizer, StepLR, SGD};
 pub use parameter::Parameter;
 pub use pool::{AdaptiveAvgPool2d, AvgPool2d, MaxPool2d};
 pub use residual::ResidualBlock;

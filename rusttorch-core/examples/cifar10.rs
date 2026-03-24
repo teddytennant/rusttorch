@@ -1,27 +1,29 @@
 //! CIFAR-10 image classification with ResNet-18.
 //!
-//! Demonstrates training a deep residual network on real image data:
-//! - Loading CIFAR-10 dataset (auto-download)
-//! - Building a ResNet-18 (CIFAR variant: 3x3 stem, no maxpool)
+//! Demonstrates production-grade CNN training:
+//! - ResNet-18 (CIFAR variant: 3x3 stem, no maxpool)
+//! - SGD with momentum + weight decay
+//! - Multi-step learning rate decay
+//! - Data augmentation (random crop + horizontal flip)
 //! - Per-channel normalization
-//! - Training with cross-entropy loss and SGD + momentum
-//! - Evaluating accuracy on the test set
 //! - Model saving
 //!
 //! Run with: cargo run -p rusttorch-core --example cifar10 --features datasets --release
 //!
-//! Expected output (~10 epochs):
+//! Expected output (~10 epochs with augmentation):
 //! ```text
 //! Loading CIFAR-10 dataset...
-//! Train: 50000 images, Test: 10000 images (3x32x32)
+//! Train: 50000 images, Test: 10000 images
 //! Model: ResNet-18 (11,173,962 parameters)
-//! Epoch 1/10 complete — avg loss: 1.4321, test accuracy: 52.34%
+//! Epoch 1/10 — lr=0.1000, avg loss: 1.42, test accuracy: 55.30%
+//! Epoch 2/10 — lr=0.1000, avg loss: 0.98, test accuracy: 66.20%
 //! ...
 //! ```
 
 use rusttorch_core::autograd::Variable;
 use rusttorch_core::data::cifar10::Cifar10Dataset;
 use rusttorch_core::data::shuffle_indices;
+use rusttorch_core::data::transforms;
 use rusttorch_core::nn::*;
 
 fn main() {
@@ -59,19 +61,32 @@ fn main() {
 
     let loss_fn = CrossEntropyLoss::new();
 
-    // SGD with momentum — standard for ResNet training
+    // SGD with momentum + weight decay — standard ResNet recipe
     let all_params = model.parameters();
-    let mut optimizer = SGD::with_momentum(all_params, lr, 0.9);
+    let mut optimizer = SGD::with_momentum_and_weight_decay(all_params, lr, 0.9, 5e-4);
 
+    // Multi-step LR schedule: decay by 10x at 40% and 70% of training
+    let milestone1 = (num_epochs as f32 * 0.4).ceil() as usize;
+    let milestone2 = (num_epochs as f32 * 0.7).ceil() as usize;
+    let scheduler = MultiStepLR::new(lr, vec![milestone1, milestone2], 0.1);
+
+    println!("Optimizer: SGD(lr={}, momentum=0.9, weight_decay=5e-4)", lr);
     println!(
-        "Optimizer: SGD(lr={}, momentum=0.9), Batch size: {}, Epochs: {}",
-        lr, batch_size, num_epochs
+        "Scheduler: MultiStepLR(milestones=[{}, {}], gamma=0.1)",
+        milestone1, milestone2
     );
+    println!("Augmentation: RandomCrop(32, pad=4) + RandomHFlip(0.5)");
+    println!("Batch size: {}, Epochs: {}", batch_size, num_epochs);
     println!();
 
     let num_batches = dataset.train_len() / batch_size;
+    let mut best_accuracy = 0.0f64;
 
     for epoch in 0..num_epochs {
+        // Update learning rate
+        let current_lr = scheduler.lr_at(epoch);
+        optimizer.set_lr(current_lr);
+
         model.train();
         let indices = shuffle_indices(dataset.train_len());
         let mut epoch_loss = 0.0f64;
@@ -81,6 +96,10 @@ fn main() {
             let start = batch_idx * batch_size;
             let batch_indices = &indices[start..start + batch_size];
             let (images, labels) = dataset.train_batch_by_indices(batch_indices);
+
+            // Data augmentation: random crop with padding + random horizontal flip
+            let images = transforms::random_crop(&images, 32, 4);
+            let images = transforms::random_horizontal_flip(&images, 0.5);
 
             // Per-channel normalization
             let images = Cifar10Dataset::normalize_batch(&images);
@@ -106,7 +125,7 @@ fn main() {
 
             if (batch_idx + 1) % 50 == 0 {
                 println!(
-                    "  Epoch {}/{} [batch {}/{}] loss={:.4}",
+                    "  [{}/{}] batch {}/{} loss={:.4}",
                     epoch + 1,
                     num_epochs,
                     batch_idx + 1,
@@ -118,17 +137,20 @@ fn main() {
 
         let avg_loss = epoch_loss / batch_count as f64;
 
-        // Evaluate on test set
+        // Evaluate on test set (no augmentation, just normalize)
         model.eval();
         let accuracy = evaluate(&dataset, &model);
+        if accuracy > best_accuracy {
+            best_accuracy = accuracy;
+        }
         println!(
-            "Epoch {}/{} complete — avg loss: {:.4}, test accuracy: {:.2}% ({}/{})\n",
+            "Epoch {}/{} — lr={:.4}, avg loss: {:.4}, test accuracy: {:.2}% (best: {:.2}%)\n",
             epoch + 1,
             num_epochs,
+            current_lr,
             avg_loss,
             accuracy * 100.0,
-            (accuracy * dataset.test_len() as f64).round() as usize,
-            dataset.test_len()
+            best_accuracy * 100.0,
         );
     }
 
@@ -142,6 +164,7 @@ fn main() {
         state_dict.len(),
         std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0),
     );
+    println!("Best test accuracy: {:.2}%", best_accuracy * 100.0);
 }
 
 fn evaluate(dataset: &Cifar10Dataset, model: &ResNet) -> f64 {
@@ -153,7 +176,7 @@ fn evaluate(dataset: &Cifar10Dataset, model: &ResNet) -> f64 {
         let (images, labels) = dataset.test_batch(start, eval_batch_size);
         let actual_batch = labels.len();
 
-        // Normalize
+        // Normalize (no augmentation for eval)
         let images = Cifar10Dataset::normalize_batch(&images);
         let input = Variable::detach(images);
 

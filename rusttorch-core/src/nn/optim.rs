@@ -16,10 +16,14 @@ pub trait Optimizer {
 }
 
 /// Stochastic Gradient Descent optimizer.
+///
+/// Supports momentum and weight decay (L2 regularization).
+/// With weight decay, the effective gradient becomes `grad + weight_decay * param`.
 pub struct SGD {
     params: Vec<Parameter>,
     lr: f32,
     momentum: f32,
+    weight_decay: f32,
     velocities: Vec<Option<Tensor>>,
 }
 
@@ -35,6 +39,7 @@ impl SGD {
             params,
             lr,
             momentum: 0.0,
+            weight_decay: 0.0,
             velocities: vec![None; n],
         }
     }
@@ -46,8 +51,38 @@ impl SGD {
             params,
             lr,
             momentum,
+            weight_decay: 0.0,
             velocities: vec![None; n],
         }
+    }
+
+    /// Create SGD with momentum and weight decay (L2 regularization).
+    ///
+    /// Standard for ResNet training: `momentum=0.9, weight_decay=5e-4`.
+    pub fn with_momentum_and_weight_decay(
+        params: Vec<Parameter>,
+        lr: f32,
+        momentum: f32,
+        weight_decay: f32,
+    ) -> Self {
+        let n = params.len();
+        SGD {
+            params,
+            lr,
+            momentum,
+            weight_decay,
+            velocities: vec![None; n],
+        }
+    }
+
+    /// Get the current learning rate.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate (used by LR schedulers).
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
     }
 }
 
@@ -72,16 +107,21 @@ impl Optimizer for SGD {
             }
 
             let new_data: Vec<f32> = if self.momentum > 0.0 {
-                // SGD with momentum: v = momentum * v + grad; param -= lr * v
+                // SGD with momentum + weight decay:
+                // effective_grad = grad + weight_decay * param
+                // v = momentum * v + effective_grad
+                // param -= lr * v
                 let vel = self.velocities[i]
                     .as_ref()
                     .map(|v| v.to_vec_f32())
                     .unwrap_or_else(|| vec![0.0; tensor_data.len()]);
 
+                let wd = self.weight_decay;
                 let new_vel: Vec<f32> = vel
                     .iter()
                     .zip(grad_data.iter())
-                    .map(|(&v, &g)| self.momentum * v + g)
+                    .zip(tensor_data.iter())
+                    .map(|((&v, &g), &p)| self.momentum * v + g + wd * p)
                     .collect();
 
                 let updated: Vec<f32> = tensor_data
@@ -94,11 +134,13 @@ impl Optimizer for SGD {
 
                 updated
             } else {
-                // Plain SGD: param -= lr * grad
+                // Plain SGD with optional weight decay:
+                // param -= lr * (grad + weight_decay * param)
+                let wd = self.weight_decay;
                 tensor_data
                     .iter()
                     .zip(grad_data.iter())
-                    .map(|(&p, &g)| p - self.lr * g)
+                    .map(|(&p, &g)| p - self.lr * (g + wd * p))
                     .collect()
             };
 
@@ -215,5 +257,87 @@ impl Optimizer for Adam {
         for param in &self.params {
             param.zero_grad();
         }
+    }
+}
+
+// --- Learning Rate Schedulers ---
+
+/// Step learning rate decay.
+///
+/// Multiplies the learning rate by `gamma` every `step_size` epochs.
+pub struct StepLR {
+    base_lr: f32,
+    step_size: usize,
+    gamma: f32,
+}
+
+impl StepLR {
+    /// Create a step LR scheduler.
+    pub fn new(base_lr: f32, step_size: usize, gamma: f32) -> Self {
+        StepLR {
+            base_lr,
+            step_size,
+            gamma,
+        }
+    }
+
+    /// Compute learning rate for a given epoch.
+    pub fn lr_at(&self, epoch: usize) -> f32 {
+        let num_decays = epoch / self.step_size;
+        self.base_lr * self.gamma.powi(num_decays as i32)
+    }
+}
+
+/// Multi-step learning rate decay at specified milestones.
+///
+/// Multiplies LR by `gamma` each time a milestone epoch is reached.
+/// Standard for CIFAR-10 ResNet: `milestones=[80, 120], gamma=0.1` with 160 epochs.
+pub struct MultiStepLR {
+    base_lr: f32,
+    milestones: Vec<usize>,
+    gamma: f32,
+}
+
+impl MultiStepLR {
+    /// Create a multi-step LR scheduler.
+    pub fn new(base_lr: f32, milestones: Vec<usize>, gamma: f32) -> Self {
+        MultiStepLR {
+            base_lr,
+            milestones,
+            gamma,
+        }
+    }
+
+    /// Compute learning rate for a given epoch.
+    pub fn lr_at(&self, epoch: usize) -> f32 {
+        let num_decays = self.milestones.iter().filter(|&&m| epoch >= m).count();
+        self.base_lr * self.gamma.powi(num_decays as i32)
+    }
+}
+
+/// Cosine annealing learning rate schedule.
+///
+/// Decays LR from `base_lr` to `min_lr` following a cosine curve over `total_epochs`.
+pub struct CosineAnnealingLR {
+    base_lr: f32,
+    min_lr: f32,
+    total_epochs: usize,
+}
+
+impl CosineAnnealingLR {
+    /// Create a cosine annealing scheduler.
+    pub fn new(base_lr: f32, min_lr: f32, total_epochs: usize) -> Self {
+        CosineAnnealingLR {
+            base_lr,
+            min_lr,
+            total_epochs,
+        }
+    }
+
+    /// Compute learning rate for a given epoch.
+    pub fn lr_at(&self, epoch: usize) -> f32 {
+        let t = (epoch as f32) / (self.total_epochs as f32);
+        let t = t.min(1.0);
+        self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (1.0 + (t * std::f32::consts::PI).cos())
     }
 }
