@@ -196,6 +196,13 @@ impl StateDict {
         Self::load(&mut file)
     }
 
+    /// Merge another StateDict into this one, keeping keys as-is.
+    pub fn merge(&mut self, other: StateDict) {
+        for (key, tensor) in other.tensors {
+            self.tensors.insert(key, tensor);
+        }
+    }
+
     /// Merge another StateDict into this one, prefixing all keys.
     pub fn merge_prefixed(&mut self, prefix: &str, other: &StateDict) {
         for (key, tensor) in &other.tensors {

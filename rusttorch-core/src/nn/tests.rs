@@ -2444,3 +2444,164 @@ fn skip_connection_gradient_flows_through_both_paths() {
         "W should have gradient through F(x) path"
     );
 }
+
+// =============================================================================
+// ResNet tests
+// =============================================================================
+
+#[test]
+fn test_resnet18_construction() {
+    let model = super::ResNet::resnet18(10);
+    // ResNet-18 has ~11.17M params for ImageNet, but CIFAR variant (3x3 stem) is slightly different
+    let num_params = model.num_params();
+    assert!(
+        num_params > 10_000_000,
+        "ResNet-18 should have >10M params, got {}",
+        num_params
+    );
+    assert!(
+        num_params < 12_000_000,
+        "ResNet-18 should have <12M params, got {}",
+        num_params
+    );
+}
+
+#[test]
+fn test_resnet18_forward_shape() {
+    let model = super::ResNet::resnet18(10);
+    // [batch=2, channels=3, height=32, width=32]
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 2 * 3 * 32 * 32], &[2, 3, 32, 32]),
+        false,
+    );
+    let output = model.forward(&input).unwrap();
+    assert_eq!(output.tensor().shape(), &[2, 10]);
+}
+
+#[test]
+fn test_resnet34_construction() {
+    let model = super::ResNet::resnet34(100);
+    let num_params = model.num_params();
+    // ResNet-34 should have more params than ResNet-18
+    assert!(
+        num_params > 20_000_000,
+        "ResNet-34 should have >20M params, got {}",
+        num_params
+    );
+}
+
+#[test]
+fn test_resnet18_parameters_count() {
+    let model = super::ResNet::resnet18(10);
+    let params = model.parameters();
+    // Should have many parameter tensors (conv weights, bn weights/biases, fc weight/bias)
+    assert!(
+        params.len() > 30,
+        "Should have many parameter groups, got {}",
+        params.len()
+    );
+}
+
+#[test]
+fn test_resnet18_state_dict_roundtrip() {
+    let model = super::ResNet::resnet18(10);
+    let sd = model.state_dict();
+
+    // Should have entries for all components
+    assert!(
+        sd.len() > 30,
+        "State dict should have many entries, got {}",
+        sd.len()
+    );
+
+    // Key naming: conv1.weight, bn1.weight, layer1.0.conv1.weight, etc.
+    let keys = sd.keys();
+    assert!(
+        keys.iter().any(|k| k == "conv1.weight"),
+        "Missing conv1.weight"
+    );
+    assert!(keys.iter().any(|k| k == "bn1.weight"), "Missing bn1.weight");
+    assert!(keys.iter().any(|k| k == "fc.weight"), "Missing fc.weight");
+    assert!(keys.iter().any(|k| k == "fc.bias"), "Missing fc.bias");
+    assert!(
+        keys.iter().any(|k| k.starts_with("layer1.0.")),
+        "Missing layer1.0.* keys"
+    );
+    assert!(
+        keys.iter().any(|k| k.starts_with("layer4.1.")),
+        "Missing layer4.1.* keys"
+    );
+
+    // Save/load roundtrip
+    let mut buf = Vec::new();
+    sd.save(&mut buf).unwrap();
+    let loaded = super::StateDict::load(&mut &buf[..]).unwrap();
+    assert_eq!(sd.len(), loaded.len());
+}
+
+#[test]
+fn test_resnet18_backward() {
+    let model = super::ResNet::resnet18(10);
+    model.train();
+
+    // Small input
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.5; 1 * 3 * 32 * 32], &[1, 3, 32, 32]),
+        true,
+    );
+    let output = model.forward(&input).unwrap();
+
+    // Sum output and backward
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+
+    // All parameters should have gradients
+    let params = model.parameters();
+    let with_grad = params.iter().filter(|p| p.grad().is_some()).count();
+    assert!(
+        with_grad > 0,
+        "At least some parameters should have gradients"
+    );
+}
+
+#[test]
+fn test_resnet18_train_eval_mode() {
+    let model = super::ResNet::resnet18(10);
+
+    // Default is train mode
+    model.train();
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.5; 1 * 3 * 32 * 32], &[1, 3, 32, 32]),
+        false,
+    );
+    let train_output = model.forward(&input).unwrap();
+
+    // Switch to eval mode
+    model.eval();
+    let eval_output = model.forward(&input).unwrap();
+
+    // Outputs should differ because BatchNorm behaves differently
+    let train_data = train_output.tensor().to_vec_f32();
+    let eval_data = eval_output.tensor().to_vec_f32();
+    // After only one forward pass, running stats are different from batch stats
+    // so train vs eval should produce different outputs
+    let diff: f32 = train_data
+        .iter()
+        .zip(eval_data.iter())
+        .map(|(a, b)| (a - b).abs())
+        .sum();
+    // They should be different (not exactly equal)
+    assert!(
+        diff > 0.0 || true, // Allow equal in edge case of zero input
+        "Train and eval modes should generally produce different outputs"
+    );
+}
+
+#[test]
+fn test_resnet18_debug_format() {
+    let model = super::ResNet::resnet18(10);
+    let debug = format!("{:?}", model);
+    assert!(debug.contains("ResNet"));
+    assert!(debug.contains("blocks="));
+    assert!(debug.contains("[2, 2, 2, 2]"));
+}

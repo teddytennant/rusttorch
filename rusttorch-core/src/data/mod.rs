@@ -8,6 +8,7 @@
 //! - IDX binary format parsing (MNIST)
 //! - MNIST dataset loading (with `datasets` feature)
 
+pub mod cifar10;
 pub mod idx;
 pub mod mnist;
 
