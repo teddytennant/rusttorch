@@ -1138,3 +1138,286 @@ pub fn transpose_forward(input: &Variable) -> Result<Variable> {
         Ok(Variable::detach(result))
     }
 }
+
+// ---- BatchNorm2d: batch normalization for 4D tensors [B, C, H, W] ----
+// y = gamma * (x - mean) / sqrt(var + eps) + beta
+// During training: compute batch stats, update running stats.
+// During eval: use running stats.
+
+struct BatchNorm2dBackward {
+    input: Variable,
+    weight: Variable,  // gamma
+    bias: Variable,    // beta
+    x_norm: Tensor,    // normalized values (before affine)
+    inv_std: Vec<f32>, // 1/sqrt(var + eps) per channel
+    _num_features: usize,
+}
+
+impl GradFn for BatchNorm2dBackward {
+    #[allow(clippy::needless_range_loop)]
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let grad_data = grad_output.to_vec_f32();
+        let x_norm_data = self.x_norm.to_vec_f32();
+        let shape = grad_output.shape();
+        let (b, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let spatial = h * w;
+        let m = (b * spatial) as f32; // number of elements per channel
+
+        let weight_data = self.weight.tensor().to_vec_f32();
+
+        // grad_weight[c] = sum over (b, h, w) of grad_output[b,c,h,w] * x_norm[b,c,h,w]
+        let grad_weight = if self.weight.requires_grad() {
+            let mut gw = vec![0.0f32; c];
+            for ci in 0..c {
+                for bi in 0..b {
+                    for si in 0..spatial {
+                        let idx = bi * c * spatial + ci * spatial + si;
+                        gw[ci] += grad_data[idx] * x_norm_data[idx];
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gw, &[c]))
+        } else {
+            None
+        };
+
+        // grad_bias[c] = sum over (b, h, w) of grad_output[b,c,h,w]
+        let grad_bias = if self.bias.requires_grad() {
+            let mut gb = vec![0.0f32; c];
+            for ci in 0..c {
+                for bi in 0..b {
+                    for si in 0..spatial {
+                        let idx = bi * c * spatial + ci * spatial + si;
+                        gb[ci] += grad_data[idx];
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gb, &[c]))
+        } else {
+            None
+        };
+
+        // grad_input: full batchnorm backward
+        // Simplified using x_norm = (x - mean) * inv_std:
+        // dx = inv_std/m * (m * dx_norm - sum(dx_norm) - x_norm * sum(dx_norm * x_norm))
+        let grad_input = if self.input.requires_grad() {
+            let mut gi = vec![0.0f32; b * c * spatial];
+
+            for ci in 0..c {
+                let gamma = weight_data[ci];
+                let istd = self.inv_std[ci];
+
+                let mut sum_dx_norm = 0.0f32;
+                let mut sum_dx_norm_xn = 0.0f32;
+
+                for bi in 0..b {
+                    for si in 0..spatial {
+                        let idx = bi * c * spatial + ci * spatial + si;
+                        let dx_norm = grad_data[idx] * gamma;
+                        sum_dx_norm += dx_norm;
+                        sum_dx_norm_xn += dx_norm * x_norm_data[idx];
+                    }
+                }
+
+                for bi in 0..b {
+                    for si in 0..spatial {
+                        let idx = bi * c * spatial + ci * spatial + si;
+                        let dx_norm = grad_data[idx] * gamma;
+                        gi[idx] = istd / m
+                            * (m * dx_norm - sum_dx_norm - x_norm_data[idx] * sum_dx_norm_xn);
+                    }
+                }
+            }
+
+            Some(Tensor::from_vec(gi, shape))
+        } else {
+            None
+        };
+
+        Ok(vec![grad_input, grad_weight, grad_bias])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone(), self.weight.clone(), self.bias.clone()]
+    }
+}
+
+/// BatchNorm2d forward pass.
+///
+/// During training: normalizes with batch stats, updates running stats.
+/// During eval: normalizes with running stats.
+#[allow(clippy::too_many_arguments)]
+pub fn batchnorm2d_forward(
+    input: &Variable,
+    weight: &Variable,
+    bias: &Variable,
+    running_mean: &std::cell::RefCell<Vec<f32>>,
+    running_var: &std::cell::RefCell<Vec<f32>>,
+    training: bool,
+    momentum: f32,
+    eps: f32,
+) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape();
+    if shape.len() != 4 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "BatchNorm2d expects 4D input [B,C,H,W], got {}D",
+                shape.len()
+            ),
+        });
+    }
+
+    let (b, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+    let spatial = h * w;
+    let m = (b * spatial) as f32;
+    let data = tensor.to_vec_f32();
+    let weight_data = weight.tensor().to_vec_f32();
+    let bias_data = bias.tensor().to_vec_f32();
+
+    let (mean, var) = if training {
+        // Compute batch mean and variance per channel
+        let mut mean = vec![0.0f32; c];
+        let mut var = vec![0.0f32; c];
+
+        for ci in 0..c {
+            let mut sum = 0.0f32;
+            for bi in 0..b {
+                for si in 0..spatial {
+                    let idx = bi * c * spatial + ci * spatial + si;
+                    sum += data[idx];
+                }
+            }
+            mean[ci] = sum / m;
+
+            let mut var_sum = 0.0f32;
+            for bi in 0..b {
+                for si in 0..spatial {
+                    let idx = bi * c * spatial + ci * spatial + si;
+                    let diff = data[idx] - mean[ci];
+                    var_sum += diff * diff;
+                }
+            }
+            var[ci] = var_sum / m;
+        }
+
+        // Update running stats: running = (1 - momentum) * running + momentum * batch
+        {
+            let mut rm = running_mean.borrow_mut();
+            let mut rv = running_var.borrow_mut();
+            // Use Bessel's correction for running variance (unbiased)
+            let correction = if m > 1.0 { m / (m - 1.0) } else { 1.0 };
+            for ci in 0..c {
+                rm[ci] = (1.0 - momentum) * rm[ci] + momentum * mean[ci];
+                rv[ci] = (1.0 - momentum) * rv[ci] + momentum * var[ci] * correction;
+            }
+        }
+
+        (mean, var)
+    } else {
+        // Use running stats
+        let rm = running_mean.borrow();
+        let rv = running_var.borrow();
+        (rm.clone(), rv.clone())
+    };
+
+    // Normalize: x_norm = (x - mean) / sqrt(var + eps)
+    let mut inv_std = vec![0.0f32; c];
+    let mut x_norm_data = vec![0.0f32; b * c * spatial];
+    let mut output_data = vec![0.0f32; b * c * spatial];
+
+    for ci in 0..c {
+        inv_std[ci] = 1.0 / (var[ci] + eps).sqrt();
+
+        for bi in 0..b {
+            for si in 0..spatial {
+                let idx = bi * c * spatial + ci * spatial + si;
+                x_norm_data[idx] = (data[idx] - mean[ci]) * inv_std[ci];
+                output_data[idx] = weight_data[ci] * x_norm_data[idx] + bias_data[ci];
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output_data, shape);
+    let x_norm = Tensor::from_vec(x_norm_data, shape);
+
+    let needs_grad = input.requires_grad() || weight.requires_grad() || bias.requires_grad();
+    if needs_grad && training {
+        Ok(Variable::from_op(
+            result,
+            Box::new(BatchNorm2dBackward {
+                input: input.clone(),
+                weight: weight.clone(),
+                bias: bias.clone(),
+                x_norm,
+                inv_std,
+                _num_features: c,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
+// ---- Dropout: randomly zero elements during training ----
+// Forward: mask = Bernoulli(1-p), output = input * mask / (1-p)
+// Backward: grad_input = grad_output * mask / (1-p)
+
+struct DropoutBackward {
+    input: Variable,
+    mask: Vec<f32>, // 0.0 or scale (1/(1-p))
+}
+
+impl GradFn for DropoutBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let grad_input = if self.input.requires_grad() {
+            let grad_data = grad_output.to_vec_f32();
+            let shape = grad_output.shape();
+            let result: Vec<f32> = grad_data
+                .iter()
+                .zip(self.mask.iter())
+                .map(|(&g, &m)| g * m)
+                .collect();
+            Some(Tensor::from_vec(result, shape))
+        } else {
+            None
+        };
+
+        Ok(vec![grad_input])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// Dropout forward pass. Only called during training with p > 0.
+pub fn dropout_forward(input: &Variable, p: f32) -> Result<Variable> {
+    use rand::Rng;
+
+    let tensor = input.tensor();
+    let data = tensor.to_vec_f32();
+    let shape = tensor.shape();
+    let scale = 1.0 / (1.0 - p);
+
+    let mut rng = rand::thread_rng();
+    let mask: Vec<f32> = (0..data.len())
+        .map(|_| if rng.gen::<f32>() >= p { scale } else { 0.0 })
+        .collect();
+
+    let output: Vec<f32> = data.iter().zip(mask.iter()).map(|(&x, &m)| x * m).collect();
+    let result = Tensor::from_vec(output, shape);
+
+    if input.requires_grad() {
+        Ok(Variable::from_op(
+            result,
+            Box::new(DropoutBackward {
+                input: input.clone(),
+                mask,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
