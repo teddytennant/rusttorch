@@ -59,11 +59,24 @@ impl TransformerEncoderLayer {
         }
     }
 
-    /// Forward pass.
+    /// Forward pass (bidirectional attention — for encoder use).
     ///
     /// Input: [batch, seq_len, d_model]
     /// Returns: [batch, seq_len, d_model]
     pub fn forward(&self, input: &Variable) -> Result<Variable> {
+        self.forward_impl(input, false)
+    }
+
+    /// Forward pass with causal masking (for decoder / GPT use).
+    ///
+    /// Each position can only attend to itself and previous positions.
+    /// Input: [batch, seq_len, d_model]
+    /// Returns: [batch, seq_len, d_model]
+    pub fn forward_causal(&self, input: &Variable) -> Result<Variable> {
+        self.forward_impl(input, true)
+    }
+
+    fn forward_impl(&self, input: &Variable, causal: bool) -> Result<Variable> {
         let shape = input.shape();
         let batch = shape[0];
         let seq_len = shape[1];
@@ -75,7 +88,11 @@ impl TransformerEncoderLayer {
         let x_norm1_3d = x_norm1.reshape(&[batch, seq_len, self.d_model])?;
 
         // attn_out = MultiHeadAttention(x_norm, x_norm, x_norm)
-        let attn_out = self.self_attn.forward_self_attn(&x_norm1_3d)?;
+        let attn_out = if causal {
+            self.self_attn.forward_causal(&x_norm1_3d)?
+        } else {
+            self.self_attn.forward_self_attn(&x_norm1_3d)?
+        };
 
         // Residual connection: x = x + attn_out
         let attn_out_flat = attn_out.reshape(&[batch * seq_len, self.d_model])?;
@@ -174,15 +191,28 @@ impl TransformerEncoder {
         }
     }
 
-    /// Forward pass through all encoder layers.
+    /// Forward pass through all encoder layers (bidirectional).
     pub fn forward(&self, input: &Variable) -> Result<Variable> {
+        self.forward_impl(input, false)
+    }
+
+    /// Forward pass with causal masking (for decoder / GPT use).
+    pub fn forward_causal(&self, input: &Variable) -> Result<Variable> {
+        self.forward_impl(input, true)
+    }
+
+    fn forward_impl(&self, input: &Variable, causal: bool) -> Result<Variable> {
         let shape = input.shape();
         let batch = shape[0];
         let seq_len = shape[1];
 
         let mut x = input.clone();
         for layer in &self.layers {
-            x = layer.forward(&x)?;
+            x = if causal {
+                layer.forward_causal(&x)?
+            } else {
+                layer.forward(&x)?
+            };
         }
 
         // Final layer norm

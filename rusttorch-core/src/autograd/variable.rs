@@ -229,6 +229,11 @@ impl Variable {
         crate::autograd::ops::log_softmax_forward(self, dim)
     }
 
+    /// GELU activation (tanh approximation, differentiable).
+    pub fn gelu(&self) -> Variable {
+        crate::autograd::ops::gelu_forward(self)
+    }
+
     /// Layer normalization over the last `norm_size` elements.
     pub fn layer_norm(
         &self,

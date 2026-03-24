@@ -3534,3 +3534,190 @@ fn test_embedding_plus_transformer() {
         used_grad_total
     );
 }
+
+// ---- Causal attention tests (nn level) ----
+
+#[test]
+fn test_mha_forward_causal_output_shape() {
+    let d_model = 8;
+    let num_heads = 2;
+    let mha = MultiHeadAttention::new(d_model, num_heads);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 2 * 4 * d_model], &[2, 4, d_model]),
+        false,
+    );
+    let out = mha.forward_causal(&input).unwrap();
+    assert_eq!(out.shape(), vec![2, 4, d_model]);
+}
+
+#[test]
+fn test_mha_causal_vs_noncausal_differ() {
+    let d_model = 8;
+    let num_heads = 2;
+    let mha = MultiHeadAttention::new(d_model, num_heads);
+
+    let input = Variable::new(
+        Tensor::from_vec(
+            (0..1 * 4 * d_model).map(|i| i as f32 * 0.01).collect(),
+            &[1, 4, d_model],
+        ),
+        false,
+    );
+
+    let out_causal = mha.forward_causal(&input).unwrap();
+    let out_normal = mha.forward_self_attn(&input).unwrap();
+
+    let causal_data = out_causal.tensor().to_vec_f32();
+    let normal_data = out_normal.tensor().to_vec_f32();
+
+    let mut any_differ = false;
+    for i in d_model..causal_data.len() {
+        if (causal_data[i] - normal_data[i]).abs() > 1e-5 {
+            any_differ = true;
+            break;
+        }
+    }
+    assert!(any_differ, "causal and non-causal MHA should produce different outputs for positions > 0");
+}
+
+#[test]
+fn test_mha_causal_backward() {
+    let d_model = 8;
+    let num_heads = 2;
+    let mha = MultiHeadAttention::new(d_model, num_heads);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 3 * d_model], &[1, 3, d_model]),
+        true,
+    );
+    let out = mha.forward_causal(&input).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+
+    // All parameters should have gradients
+    for p in mha.parameters() {
+        assert!(p.grad().is_some(), "parameter {} should have gradient", p.name());
+    }
+}
+
+#[test]
+fn test_transformer_encoder_layer_causal_output_shape() {
+    let d_model = 8;
+    let layer = TransformerEncoderLayer::new(d_model, 2, 32);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 2 * 4 * d_model], &[2, 4, d_model]),
+        false,
+    );
+    let out = layer.forward_causal(&input).unwrap();
+    assert_eq!(out.shape(), vec![2, 4, d_model]);
+}
+
+#[test]
+fn test_transformer_encoder_layer_causal_backward() {
+    let d_model = 8;
+    let layer = TransformerEncoderLayer::new(d_model, 2, 32);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 3 * d_model], &[1, 3, d_model]),
+        true,
+    );
+    let out = layer.forward_causal(&input).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+
+    for p in layer.parameters() {
+        assert!(p.grad().is_some(), "parameter {} should have gradient", p.name());
+    }
+}
+
+#[test]
+fn test_transformer_encoder_causal_output_shape() {
+    let d_model = 8;
+    let encoder = TransformerEncoder::new(d_model, 2, 32, 2);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 4 * d_model], &[1, 4, d_model]),
+        false,
+    );
+    let out = encoder.forward_causal(&input).unwrap();
+    assert_eq!(out.shape(), vec![1, 4, d_model]);
+}
+
+#[test]
+fn test_transformer_encoder_causal_backward() {
+    let d_model = 8;
+    let encoder = TransformerEncoder::new(d_model, 2, 32, 2);
+    let input = Variable::new(
+        Tensor::from_vec(vec![0.1; 1 * 3 * d_model], &[1, 3, d_model]),
+        true,
+    );
+    let out = encoder.forward_causal(&input).unwrap();
+    let loss = out.sum().unwrap();
+    loss.backward().unwrap();
+
+    for p in encoder.parameters() {
+        assert!(p.grad().is_some(), "parameter {} should have gradient after causal forward", p.name());
+    }
+}
+
+#[test]
+fn test_gpt_training_step() {
+    // Simulates one GPT training step: embedding → causal transformer → linear → cross-entropy
+    let vocab_size = 10;
+    let d_model = 8;
+    let num_heads = 2;
+    let d_ff = 16;
+    let seq_len = 4;
+    let batch = 2;
+
+    let token_emb = Embedding::new(vocab_size, d_model);
+    let pos_emb = Embedding::new(seq_len, d_model);
+    let encoder = TransformerEncoder::new(d_model, num_heads, d_ff, 1);
+    let head = Linear::new(d_model, vocab_size);
+
+    // Random token indices
+    let tokens = vec![vec![0, 3, 5, 7], vec![1, 2, 4, 6]];
+    let targets = vec![vec![3, 5, 7, 9], vec![2, 4, 6, 8]];
+
+    // Forward
+    let tok = token_emb.forward_2d(&tokens).unwrap();
+    let pos_indices: Vec<Vec<usize>> = (0..batch).map(|_| (0..seq_len).collect()).collect();
+    let pos = pos_emb.forward_2d(&pos_indices).unwrap();
+    let x = tok.add(&pos).unwrap();
+    let x = encoder.forward_causal(&x).unwrap();
+    let x_flat = x.reshape(&[batch * seq_len, d_model]).unwrap();
+    let logits = head.forward(&x_flat).unwrap();
+
+    // Target one-hot
+    let flat_targets: Vec<usize> = targets.into_iter().flatten().collect();
+    let mut target_data = vec![0.0f32; batch * seq_len * vocab_size];
+    for (i, &t) in flat_targets.iter().enumerate() {
+        target_data[i * vocab_size + t] = 1.0;
+    }
+    let target_var = Variable::new(
+        Tensor::from_vec(target_data, &[batch * seq_len, vocab_size]),
+        false,
+    );
+
+    let loss_fn = CrossEntropyLoss::new();
+    let loss = loss_fn.forward(&logits, &target_var).unwrap();
+    let loss_val = loss.tensor().to_vec_f32()[0];
+
+    // Loss should be reasonable (around -ln(1/10) = 2.3 for random)
+    assert!(loss_val > 0.0, "loss should be positive");
+    assert!(loss_val < 10.0, "loss should be reasonable, got {}", loss_val);
+
+    // Backward
+    loss.backward().unwrap();
+
+    // All parameters should have gradients
+    for p in token_emb.parameters() {
+        assert!(p.grad().is_some(), "token_emb grad missing");
+    }
+    for p in pos_emb.parameters() {
+        assert!(p.grad().is_some(), "pos_emb grad missing");
+    }
+    for p in encoder.parameters() {
+        assert!(p.grad().is_some(), "encoder param {} grad missing", p.name());
+    }
+    for p in head.parameters() {
+        assert!(p.grad().is_some(), "head grad missing");
+    }
+}

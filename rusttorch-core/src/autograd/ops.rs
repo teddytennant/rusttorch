@@ -2527,6 +2527,27 @@ pub fn scaled_dot_product_attention_forward(
     k: &Variable,
     v: &Variable,
 ) -> Result<(Variable, Tensor)> {
+    scaled_dot_product_attention_forward_impl(q, k, v, false)
+}
+
+/// Scaled dot-product attention with causal masking.
+/// Applies a lower-triangular mask so each position can only attend to previous positions.
+/// Q: [B, seq, d_k], K: [B, seq, d_k], V: [B, seq, d_v] (seq_q == seq_k for causal)
+/// Returns: [B, seq, d_v]
+pub fn scaled_dot_product_attention_causal_forward(
+    q: &Variable,
+    k: &Variable,
+    v: &Variable,
+) -> Result<(Variable, Tensor)> {
+    scaled_dot_product_attention_forward_impl(q, k, v, true)
+}
+
+fn scaled_dot_product_attention_forward_impl(
+    q: &Variable,
+    k: &Variable,
+    v: &Variable,
+    causal: bool,
+) -> Result<(Variable, Tensor)> {
     let q_data = q.tensor().to_vec_f32();
     let k_data = k.tensor().to_vec_f32();
     let v_data = v.tensor().to_vec_f32();
@@ -2566,6 +2587,17 @@ pub fn scaled_dot_product_attention_forward(
                         * k_data[b * seq_k * d_k + sk * d_k + d];
                 }
                 scores[b * seq_q * seq_k + sq * seq_k + sk] = dot * scale;
+            }
+        }
+    }
+
+    // Apply causal mask: set scores where sk > sq to -infinity
+    if causal {
+        for b in 0..batch {
+            for sq in 0..seq_q {
+                for sk in (sq + 1)..seq_k {
+                    scores[b * seq_q * seq_k + sq * seq_k + sk] = f32::NEG_INFINITY;
+                }
             }
         }
     }
@@ -2627,4 +2659,65 @@ pub fn scaled_dot_product_attention_forward(
     };
 
     Ok((output_var, attn_tensor))
+}
+
+// ---- GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))) ----
+// Approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+
+struct GeluBackward {
+    input: Variable,
+    input_saved: Tensor,
+}
+
+impl GradFn for GeluBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        if !self.input.requires_grad() {
+            return Ok(vec![None]);
+        }
+        let x = self.input_saved.to_vec_f32();
+        let go = grad_output.to_vec_f32();
+        let sqrt_2_pi = (2.0f32 / std::f32::consts::PI).sqrt();
+        let mut grad = vec![0.0f32; x.len()];
+        for i in 0..x.len() {
+            let xi = x[i];
+            let x3 = xi * xi * xi;
+            let inner = sqrt_2_pi * (xi + 0.044715 * x3);
+            let tanh_inner = inner.tanh();
+            let sech2 = 1.0 - tanh_inner * tanh_inner;
+            let d_inner = sqrt_2_pi * (1.0 + 3.0 * 0.044715 * xi * xi);
+            // d/dx gelu(x) = 0.5 * (1 + tanh(inner)) + 0.5 * x * sech²(inner) * d_inner
+            grad[i] = go[i] * (0.5 * (1.0 + tanh_inner) + 0.5 * xi * sech2 * d_inner);
+        }
+        Ok(vec![Some(Tensor::from_vec(grad, self.input_saved.shape()))])
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        vec![self.input.clone()]
+    }
+}
+
+/// GELU activation forward (differentiable).
+/// Uses the tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+pub fn gelu_forward(input: &Variable) -> Variable {
+    let input_tensor = input.tensor();
+    let data = input_tensor.to_vec_f32();
+    let sqrt_2_pi = (2.0f32 / std::f32::consts::PI).sqrt();
+    let result: Vec<f32> = data
+        .iter()
+        .map(|&x| {
+            0.5 * x * (1.0 + (sqrt_2_pi * (x + 0.044715 * x * x * x)).tanh())
+        })
+        .collect();
+    let result_tensor = Tensor::from_vec(result, input_tensor.shape());
+    if input.requires_grad() {
+        Variable::from_op(
+            result_tensor,
+            Box::new(GeluBackward {
+                input: input.clone(),
+                input_saved: input_tensor,
+            }),
+        )
+    } else {
+        Variable::detach(result_tensor)
+    }
 }
