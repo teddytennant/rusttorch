@@ -25,7 +25,9 @@ use rusttorch_core::data::shuffle_indices;
 use rusttorch_core::nn::*;
 
 fn main() {
-    let data_dir = std::env::args().nth(1).unwrap_or_else(|| "./data/mnist".to_string());
+    let data_dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "./data/mnist".to_string());
     let num_epochs: usize = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
@@ -145,6 +147,21 @@ fn main() {
             dataset.test_len()
         );
     }
+
+    // Save trained model
+    let mut state_dict = StateDict::new();
+    state_dict.merge_prefixed("conv1", &conv1.state_dict());
+    state_dict.merge_prefixed("conv2", &conv2.state_dict());
+    state_dict.merge_prefixed("fc", &fc.state_dict());
+
+    let save_path = format!("{}/mnist_cnn.rt", data_dir);
+    state_dict.save_file(&save_path).unwrap();
+    println!(
+        "Model saved to {} ({} parameters, {} bytes)",
+        save_path,
+        state_dict.len(),
+        std::fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0),
+    );
 }
 
 fn evaluate(

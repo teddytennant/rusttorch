@@ -2,7 +2,7 @@
 
 use crate::autograd::Variable;
 use crate::nn::*;
-use crate::tensor::Tensor;
+use crate::tensor::{DType, Tensor};
 
 // ---- Parameter tests ----
 
@@ -1709,4 +1709,192 @@ fn test_multiclass_classification_training() {
         "Should classify at least 7/9 correctly, got {}/9",
         correct
     );
+}
+
+// =========================================================================
+// StateDict integration tests — save/load for real nn layers
+// =========================================================================
+
+#[test]
+fn linear_state_dict_roundtrip() {
+    let layer = Linear::new(4, 3);
+    let sd = layer.state_dict();
+    assert_eq!(sd.len(), 2); // weight + bias
+    assert!(sd.get("weight").is_some());
+    assert!(sd.get("bias").is_some());
+
+    // Modify parameters
+    let w_orig = layer.weight.tensor().to_vec_f32();
+    let zeros = Tensor::zeros(&layer.weight.shape(), DType::Float32);
+    layer.weight.update(zeros);
+    assert_ne!(layer.weight.tensor().to_vec_f32(), w_orig);
+
+    // Load state dict — should restore original
+    layer.load_state_dict(&sd);
+    assert_eq!(layer.weight.tensor().to_vec_f32(), w_orig);
+}
+
+#[test]
+fn linear_no_bias_state_dict() {
+    let layer = Linear::no_bias(4, 3);
+    let sd = layer.state_dict();
+    assert_eq!(sd.len(), 1); // weight only
+    assert!(sd.get("weight").is_some());
+    assert!(sd.get("bias").is_none());
+}
+
+#[test]
+fn conv2d_state_dict_roundtrip() {
+    let layer = Conv2d::new(3, 8, 3);
+    let sd = layer.state_dict();
+    assert_eq!(sd.len(), 2); // weight + bias
+    let w = sd.get("weight").unwrap();
+    assert_eq!(w.shape(), &[8, 3, 3, 3]); // [out, in, kh, kw]
+
+    let w_orig = layer.weight.tensor().to_vec_f32();
+    layer
+        .weight
+        .update(Tensor::zeros(&layer.weight.shape(), DType::Float32));
+    layer.load_state_dict(&sd);
+    assert_eq!(layer.weight.tensor().to_vec_f32(), w_orig);
+}
+
+#[test]
+fn batchnorm_state_dict_includes_running_stats() {
+    let layer = BatchNorm2d::new(8);
+    let sd = layer.state_dict();
+    assert_eq!(sd.len(), 4); // weight, bias, running_mean, running_var
+    assert!(sd.get("weight").is_some());
+    assert!(sd.get("bias").is_some());
+    assert!(sd.get("running_mean").is_some());
+    assert!(sd.get("running_var").is_some());
+
+    // running_mean should be zeros, running_var should be ones
+    let rm = sd.get("running_mean").unwrap().to_vec_f32();
+    assert!(rm.iter().all(|&v| v == 0.0));
+    let rv = sd.get("running_var").unwrap().to_vec_f32();
+    assert!(rv.iter().all(|&v| v == 1.0));
+}
+
+#[test]
+fn batchnorm_state_dict_load_running_stats() {
+    let layer = BatchNorm2d::new(4);
+
+    // Simulate modified running stats
+    let mut sd = StateDict::new();
+    sd.insert("weight", Tensor::from_vec(vec![2.0; 4], &[4]));
+    sd.insert("bias", Tensor::from_vec(vec![0.5; 4], &[4]));
+    sd.insert(
+        "running_mean",
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]),
+    );
+    sd.insert(
+        "running_var",
+        Tensor::from_vec(vec![0.5, 0.6, 0.7, 0.8], &[4]),
+    );
+
+    layer.load_state_dict(&sd);
+    assert_eq!(layer.running_mean(), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(layer.running_var(), vec![0.5, 0.6, 0.7, 0.8]);
+    assert_eq!(layer.weight.tensor().to_vec_f32(), vec![2.0; 4]);
+}
+
+#[test]
+fn sequential_state_dict_prefixed() {
+    let model = Sequential::new(vec![
+        Box::new(Linear::new(4, 3)),
+        Box::new(ReLU::new()),
+        Box::new(Linear::new(3, 1)),
+    ]);
+
+    let sd = model.state_dict();
+    // Layer 0 (Linear): 0.weight, 0.bias
+    // Layer 1 (ReLU): no params
+    // Layer 2 (Linear): 2.weight, 2.bias
+    assert_eq!(sd.len(), 4);
+    assert!(sd.get("0.weight").is_some());
+    assert!(sd.get("0.bias").is_some());
+    assert!(sd.get("2.weight").is_some());
+    assert!(sd.get("2.bias").is_some());
+}
+
+#[test]
+fn sequential_state_dict_save_load_roundtrip() {
+    let model = Sequential::new(vec![
+        Box::new(Linear::new(4, 3)),
+        Box::new(ReLU::new()),
+        Box::new(Linear::new(3, 1)),
+    ]);
+
+    // Save state dict
+    let sd = model.state_dict();
+    let mut buf = Vec::new();
+    sd.save(&mut buf).unwrap();
+
+    // Create a fresh model with different weights
+    let model2 = Sequential::new(vec![
+        Box::new(Linear::new(4, 3)),
+        Box::new(ReLU::new()),
+        Box::new(Linear::new(3, 1)),
+    ]);
+
+    // Weights should differ (random init)
+    let w1 = sd.get("0.weight").unwrap().to_vec_f32();
+    let w2 = model2.state_dict().get("0.weight").unwrap().to_vec_f32();
+    assert_ne!(w1, w2);
+
+    // Load saved weights
+    let loaded_sd = StateDict::load(&mut &buf[..]).unwrap();
+    model2.load_state_dict(&loaded_sd);
+
+    // Weights should now match
+    let w2_loaded = model2.state_dict().get("0.weight").unwrap().to_vec_f32();
+    assert_eq!(w1, w2_loaded);
+}
+
+#[test]
+fn sequential_with_batchnorm_state_dict() {
+    let model = Sequential::new(vec![
+        Box::new(Conv2d::new(1, 4, 3)),
+        Box::new(BatchNorm2d::new(4)),
+        Box::new(ReLU::new()),
+    ]);
+
+    let sd = model.state_dict();
+    // Conv2d: 0.weight, 0.bias
+    // BatchNorm: 1.weight, 1.bias, 1.running_mean, 1.running_var
+    // ReLU: no params
+    assert_eq!(sd.len(), 6);
+    assert!(sd.get("1.running_mean").is_some());
+    assert!(sd.get("1.running_var").is_some());
+}
+
+#[test]
+fn activation_modules_empty_state_dict() {
+    let relu = ReLU::new();
+    assert!(relu.state_dict().is_empty());
+
+    let sig = Sigmoid::new();
+    assert!(sig.state_dict().is_empty());
+
+    let tanh = Tanh::new();
+    assert!(tanh.state_dict().is_empty());
+}
+
+#[test]
+fn dropout_empty_state_dict() {
+    let drop = Dropout::new(0.5);
+    assert!(drop.state_dict().is_empty());
+}
+
+#[test]
+fn flatten_empty_state_dict() {
+    let flat = Flatten::new();
+    assert!(flat.state_dict().is_empty());
+}
+
+#[test]
+fn maxpool_empty_state_dict() {
+    let pool = MaxPool2d::new(2);
+    assert!(pool.state_dict().is_empty());
 }

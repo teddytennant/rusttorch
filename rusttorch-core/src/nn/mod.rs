@@ -47,6 +47,7 @@ pub mod optim;
 pub mod parameter;
 pub mod pool;
 pub mod sequential;
+pub mod state_dict;
 
 #[cfg(test)]
 mod tests;
@@ -63,3 +64,4 @@ pub use optim::{Adam, Optimizer, SGD};
 pub use parameter::Parameter;
 pub use pool::MaxPool2d;
 pub use sequential::Sequential;
+pub use state_dict::StateDict;

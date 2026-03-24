@@ -65,8 +65,7 @@ impl MnistDataset {
     #[cfg(feature = "datasets")]
     pub fn load<P: AsRef<Path>>(data_dir: P) -> Result<Self, String> {
         let dir = data_dir.as_ref();
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create data directory: {}", e))?;
+        fs::create_dir_all(dir).map_err(|e| format!("Failed to create data directory: {}", e))?;
 
         // Download if needed
         for filename in &[TRAIN_IMAGES, TRAIN_LABELS, TEST_IMAGES, TEST_LABELS] {
@@ -154,12 +153,24 @@ impl MnistDataset {
 
     /// Get a batch of training images as a Tensor [batch_size, 1, 28, 28].
     pub fn train_batch(&self, start: usize, batch_size: usize) -> (Tensor, Vec<u8>) {
-        self.get_batch(&self.train_images, &self.train_labels, self.train_len, start, batch_size)
+        self.get_batch(
+            &self.train_images,
+            &self.train_labels,
+            self.train_len,
+            start,
+            batch_size,
+        )
     }
 
     /// Get a batch of test images as a Tensor [batch_size, 1, 28, 28].
     pub fn test_batch(&self, start: usize, batch_size: usize) -> (Tensor, Vec<u8>) {
-        self.get_batch(&self.test_images, &self.test_labels, self.test_len, start, batch_size)
+        self.get_batch(
+            &self.test_images,
+            &self.test_labels,
+            self.test_len,
+            start,
+            batch_size,
+        )
     }
 
     /// Get training images/labels by arbitrary indices (for shuffled batching).
@@ -207,10 +218,7 @@ impl MnistDataset {
 
         let batch_labels = labels[start..end].to_vec();
 
-        let tensor = Tensor::from_vec(
-            batch_data,
-            &[actual_batch, 1, self.rows, self.cols],
-        );
+        let tensor = Tensor::from_vec(batch_data, &[actual_batch, 1, self.rows, self.cols]);
 
         (tensor, batch_labels)
     }
@@ -251,8 +259,7 @@ fn download_file(filename: &str, dest: &PathBuf) -> Result<(), String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read response for {}: {}", filename, e))?;
 
-    fs::write(dest, &bytes)
-        .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
+    fs::write(dest, &bytes).map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
 
     eprintln!("Downloaded {} ({} bytes)", filename, bytes.len());
     Ok(())
