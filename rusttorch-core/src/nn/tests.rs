@@ -1380,3 +1380,333 @@ fn test_xor_training() {
         );
     }
 }
+
+// ---- LogSoftmax tests ----
+
+#[test]
+fn test_log_softmax_sums_to_one() {
+    // exp(log_softmax(x)) should sum to 1
+    let data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 4]), false);
+    let output = input.log_softmax(1).unwrap();
+    let out_data = output.tensor().to_vec_f32();
+
+    // exp of log_softmax should sum to 1
+    let sum: f32 = out_data.iter().map(|&x| x.exp()).sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-5,
+        "exp(log_softmax) should sum to 1, got {}",
+        sum
+    );
+}
+
+#[test]
+fn test_log_softmax_values_negative() {
+    // log_softmax values should all be <= 0
+    let data = vec![1.0f32, 2.0, 3.0];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 3]), false);
+    let output = input.log_softmax(1).unwrap();
+    let out_data = output.tensor().to_vec_f32();
+
+    for &v in &out_data {
+        assert!(v <= 0.0, "log_softmax values should be <= 0, got {}", v);
+    }
+}
+
+#[test]
+fn test_log_softmax_numerical_stability() {
+    // Large values shouldn't cause overflow
+    let data = vec![1000.0f32, 1001.0, 1002.0];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 3]), false);
+    let output = input.log_softmax(1).unwrap();
+    let out_data = output.tensor().to_vec_f32();
+
+    for &v in &out_data {
+        assert!(v.is_finite(), "log_softmax should be finite, got {}", v);
+    }
+    let sum: f32 = out_data.iter().map(|&x| x.exp()).sum();
+    assert!((sum - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_log_softmax_batch() {
+    let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = Variable::new(Tensor::from_vec(data, &[2, 3]), false);
+    let output = input.log_softmax(1).unwrap();
+    let out_data = output.tensor().to_vec_f32();
+
+    // Each row should independently sum (exp) to 1
+    let sum1: f32 = out_data[0..3].iter().map(|&x| x.exp()).sum();
+    let sum2: f32 = out_data[3..6].iter().map(|&x| x.exp()).sum();
+    assert!((sum1 - 1.0).abs() < 1e-5);
+    assert!((sum2 - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_log_softmax_backward() {
+    let data = vec![1.0f32, 2.0, 3.0];
+    let input = Variable::new(Tensor::from_vec(data, &[1, 3]), true);
+    let output = input.log_softmax(1).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+
+    let grad = input.grad();
+    assert!(grad.is_some(), "Should have gradients");
+
+    // For log_softmax, sum of all outputs = sum(x_i - log(sum(exp)))
+    // d/dx_i (sum log_softmax) = 1 - n * softmax_i
+    // where n is the number of classes
+    let grad_data = grad.unwrap().to_vec_f32();
+    assert_eq!(grad_data.len(), 3);
+}
+
+#[test]
+fn test_log_softmax_gradient_numerical() {
+    let eps = 1e-3;
+    let data = vec![1.0f32, 2.0, 3.0, 0.5, 1.5, 2.5];
+    let input = Variable::new(Tensor::from_vec(data.clone(), &[2, 3]), true);
+    let output = input.log_softmax(1).unwrap();
+    let loss = output.sum().unwrap();
+    loss.backward().unwrap();
+    let analytical = input.grad().unwrap().to_vec_f32();
+
+    for i in 0..data.len() {
+        let mut dp = data.clone();
+        dp[i] += eps;
+        let inp_p = Variable::new(Tensor::from_vec(dp, &[2, 3]), false);
+        let lp = inp_p.log_softmax(1).unwrap().sum().unwrap();
+
+        let mut dm = data.clone();
+        dm[i] -= eps;
+        let inp_m = Variable::new(Tensor::from_vec(dm, &[2, 3]), false);
+        let lm = inp_m.log_softmax(1).unwrap().sum().unwrap();
+
+        let numerical = (lp.tensor().to_vec_f32()[0] - lm.tensor().to_vec_f32()[0]) / (2.0 * eps);
+        assert!(
+            (analytical[i] - numerical).abs() < 0.01,
+            "LogSoftmax grad mismatch at {}: analytical={}, numerical={}",
+            i,
+            analytical[i],
+            numerical
+        );
+    }
+}
+
+// ---- CrossEntropyLoss tests ----
+
+#[test]
+fn test_cross_entropy_loss_basic() {
+    let loss_fn = CrossEntropyLoss::new();
+
+    // Perfect prediction: logits strongly favor class 0
+    let logits = Variable::new(Tensor::from_vec(vec![10.0, -10.0, -10.0], &[1, 3]), false);
+    let target = Variable::new(Tensor::from_vec(vec![1.0, 0.0, 0.0], &[1, 3]), false);
+    let loss = loss_fn.forward(&logits, &target).unwrap();
+    let loss_val = loss.tensor().to_vec_f32()[0];
+
+    // Loss should be very small (correct prediction)
+    assert!(
+        loss_val < 0.01,
+        "Loss for correct prediction should be ~0, got {}",
+        loss_val
+    );
+}
+
+#[test]
+fn test_cross_entropy_loss_wrong_prediction() {
+    let loss_fn = CrossEntropyLoss::new();
+
+    // Wrong prediction: logits favor class 2 but target is class 0
+    let logits = Variable::new(Tensor::from_vec(vec![-10.0, -10.0, 10.0], &[1, 3]), false);
+    let target = Variable::new(Tensor::from_vec(vec![1.0, 0.0, 0.0], &[1, 3]), false);
+    let loss = loss_fn.forward(&logits, &target).unwrap();
+    let loss_val = loss.tensor().to_vec_f32()[0];
+
+    // Loss should be large (wrong prediction)
+    assert!(
+        loss_val > 1.0,
+        "Loss for wrong prediction should be large, got {}",
+        loss_val
+    );
+}
+
+#[test]
+fn test_cross_entropy_loss_batch() {
+    let loss_fn = CrossEntropyLoss::new();
+
+    // Batch of 2: one correct, one wrong
+    let logits = Variable::new(
+        Tensor::from_vec(vec![5.0, -5.0, -5.0, -5.0, -5.0, 5.0], &[2, 3]),
+        false,
+    );
+    // Both target class 0
+    let target = Variable::new(
+        Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0], &[2, 3]),
+        false,
+    );
+    let loss = loss_fn.forward(&logits, &target).unwrap();
+    let loss_val = loss.tensor().to_vec_f32()[0];
+
+    // Average of low loss + high loss
+    assert!(
+        loss_val > 0.1,
+        "Mixed batch loss should be moderate, got {}",
+        loss_val
+    );
+}
+
+#[test]
+fn test_cross_entropy_loss_backward() {
+    let loss_fn = CrossEntropyLoss::new();
+
+    let logits = Variable::new(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[1, 3]), true);
+    let target = Variable::new(Tensor::from_vec(vec![1.0, 0.0, 0.0], &[1, 3]), false);
+
+    let loss = loss_fn.forward(&logits, &target).unwrap();
+    loss.backward().unwrap();
+
+    let grad = logits.grad();
+    assert!(grad.is_some(), "Logits should have gradients");
+
+    let grad_data = grad.unwrap().to_vec_f32();
+    // The gradient for the correct class should be negative (wants to increase logit)
+    // The gradient for wrong classes should be positive (wants to decrease logits)
+    // Specifically: grad = (softmax(x) - target) / batch_size
+    assert!(
+        grad_data[0] < 0.0,
+        "Gradient for correct class should be negative, got {}",
+        grad_data[0]
+    );
+    assert!(
+        grad_data[1] > 0.0,
+        "Gradient for wrong class should be positive, got {}",
+        grad_data[1]
+    );
+}
+
+#[test]
+fn test_cross_entropy_gradient_numerical() {
+    let eps = 1e-3;
+    let logits_data = vec![1.0f32, 2.0, 0.5];
+    let target_data = vec![0.0f32, 1.0, 0.0];
+
+    let logits = Variable::new(Tensor::from_vec(logits_data.clone(), &[1, 3]), true);
+    let target = Variable::new(Tensor::from_vec(target_data.clone(), &[1, 3]), false);
+    let loss_fn = CrossEntropyLoss::new();
+    let loss = loss_fn.forward(&logits, &target).unwrap();
+    loss.backward().unwrap();
+    let analytical = logits.grad().unwrap().to_vec_f32();
+
+    for i in 0..logits_data.len() {
+        let mut dp = logits_data.clone();
+        dp[i] += eps;
+        let lp_logits = Variable::new(Tensor::from_vec(dp, &[1, 3]), false);
+        let lp_target = Variable::new(Tensor::from_vec(target_data.clone(), &[1, 3]), false);
+        let lp = loss_fn.forward(&lp_logits, &lp_target).unwrap();
+
+        let mut dm = logits_data.clone();
+        dm[i] -= eps;
+        let lm_logits = Variable::new(Tensor::from_vec(dm, &[1, 3]), false);
+        let lm_target = Variable::new(Tensor::from_vec(target_data.clone(), &[1, 3]), false);
+        let lm = loss_fn.forward(&lm_logits, &lm_target).unwrap();
+
+        let numerical = (lp.tensor().to_vec_f32()[0] - lm.tensor().to_vec_f32()[0]) / (2.0 * eps);
+        assert!(
+            (analytical[i] - numerical).abs() < 0.01,
+            "CE grad mismatch at {}: analytical={}, numerical={}",
+            i,
+            analytical[i],
+            numerical
+        );
+    }
+}
+
+// ---- Multi-class classification training test ----
+
+#[test]
+fn test_multiclass_classification_training() {
+    // Train a 3-class classifier on synthetic linearly separable data.
+    // Class 0: x > 0, y > 0  (quadrant I)
+    // Class 1: x < 0          (left half)
+    // Class 2: x > 0, y < 0  (quadrant IV)
+
+    let model = Sequential::new(vec![
+        Box::new(Linear::new(2, 8)),
+        Box::new(ReLU::new()),
+        Box::new(Linear::new(8, 3)), // 3 classes, raw logits (no softmax)
+    ]);
+
+    let loss_fn = CrossEntropyLoss::new();
+    let mut optimizer = Adam::new(model.parameters(), 0.05);
+
+    // Training data: 3 points per class
+    let inputs = vec![
+        (vec![1.0f32, 1.0], vec![1.0, 0.0, 0.0]), // class 0
+        (vec![0.5, 2.0], vec![1.0, 0.0, 0.0]),    // class 0
+        (vec![2.0, 0.5], vec![1.0, 0.0, 0.0]),    // class 0
+        (vec![-1.0, 0.5], vec![0.0, 1.0, 0.0]),   // class 1
+        (vec![-2.0, -1.0], vec![0.0, 1.0, 0.0]),  // class 1
+        (vec![-0.5, 1.5], vec![0.0, 1.0, 0.0]),   // class 1
+        (vec![1.0, -1.0], vec![0.0, 0.0, 1.0]),   // class 2
+        (vec![2.0, -2.0], vec![0.0, 0.0, 1.0]),   // class 2
+        (vec![0.5, -1.5], vec![0.0, 0.0, 1.0]),   // class 2
+    ];
+
+    let mut last_loss = f32::MAX;
+
+    for _epoch in 0..300 {
+        let mut epoch_loss = 0.0;
+
+        for (inp, tgt) in &inputs {
+            optimizer.zero_grad();
+
+            let x = Variable::new(Tensor::from_vec(inp.clone(), &[1, 2]), false);
+            let y = Variable::new(Tensor::from_vec(tgt.clone(), &[1, 3]), false);
+
+            let logits = model.forward(&x).unwrap();
+            let loss = loss_fn.forward(&logits, &y).unwrap();
+            epoch_loss += loss.tensor().to_vec_f32()[0];
+
+            loss.backward().unwrap();
+            optimizer.step().unwrap();
+        }
+
+        last_loss = epoch_loss / inputs.len() as f32;
+    }
+
+    assert!(
+        last_loss < 0.1,
+        "3-class classifier should converge, but final loss = {}",
+        last_loss
+    );
+
+    // Verify predictions (argmax of logits should match target class)
+    let mut correct = 0;
+    for (inp, tgt) in &inputs {
+        let x = Variable::new(Tensor::from_vec(inp.clone(), &[1, 2]), false);
+        let logits = model.forward(&x).unwrap().tensor().to_vec_f32();
+
+        let pred_class = logits
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        let true_class = tgt
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+
+        if pred_class == true_class {
+            correct += 1;
+        }
+    }
+
+    assert!(
+        correct >= 7,
+        "Should classify at least 7/9 correctly, got {}/9",
+        correct
+    );
+}

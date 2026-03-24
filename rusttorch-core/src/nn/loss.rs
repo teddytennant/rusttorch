@@ -30,3 +30,35 @@ impl Default for MSELoss {
         Self::new()
     }
 }
+
+/// Cross-entropy loss for multi-class classification.
+///
+/// Combines log-softmax and negative log likelihood in a numerically stable way.
+///
+/// Input: raw logits [B, C] (NOT softmax probabilities)
+/// Target: one-hot encoded labels [B, C]
+/// Output: scalar loss
+///
+/// Formula: L = -mean(sum_c(target_c * log_softmax(input_c)))
+#[derive(Debug)]
+pub struct CrossEntropyLoss;
+
+impl CrossEntropyLoss {
+    pub fn new() -> Self {
+        CrossEntropyLoss
+    }
+
+    /// Compute cross-entropy loss.
+    ///
+    /// - `logits`: raw scores [B, C], NOT passed through softmax
+    /// - `target`: one-hot encoded labels [B, C]
+    pub fn forward(&self, logits: &Variable, target: &Variable) -> Result<Variable> {
+        crate::autograd::ops::cross_entropy_loss_forward(logits, target)
+    }
+}
+
+impl Default for CrossEntropyLoss {
+    fn default() -> Self {
+        Self::new()
+    }
+}
