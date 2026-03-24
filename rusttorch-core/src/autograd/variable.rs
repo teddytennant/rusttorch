@@ -228,6 +228,17 @@ impl Variable {
     pub fn log_softmax(&self, dim: usize) -> Result<Variable> {
         crate::autograd::ops::log_softmax_forward(self, dim)
     }
+
+    /// Layer normalization over the last `norm_size` elements.
+    pub fn layer_norm(
+        &self,
+        norm_size: usize,
+        weight: Option<&Variable>,
+        bias: Option<&Variable>,
+        eps: f32,
+    ) -> Result<Variable> {
+        crate::autograd::ops::layer_norm_forward(self, norm_size, weight, bias, eps)
+    }
 }
 
 impl fmt::Debug for Variable {
