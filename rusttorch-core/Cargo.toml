@@ -17,6 +17,8 @@ num-traits.workspace = true
 rayon.workspace = true
 rand.workspace = true
 num_cpus = "1.16"
+ureq = { version = "2", optional = true }
+flate2 = { version = "1", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -26,6 +28,7 @@ tempfile.workspace = true
 [features]
 default = []
 ffi = []  # Enable C FFI exports for PyTorch integration
+datasets = ["ureq", "flate2"]  # Download and load standard datasets (MNIST, etc.)
 
 [[bench]]
 name = "tensor_ops"
