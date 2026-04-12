@@ -85,3 +85,50 @@ impl Module for Tanh {
         vec![]
     }
 }
+
+/// SiLU / Swish activation: `x * sigmoid(x)`.
+///
+/// Same shape as the input. This is the activation used inside the
+/// SwiGLU FFN block in Llama-style transformers.
+#[derive(Debug)]
+pub struct SiLU;
+
+impl SiLU {
+    pub fn new() -> Self {
+        SiLU
+    }
+}
+
+impl Default for SiLU {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Module for SiLU {
+    fn forward(&self, input: &Variable) -> Result<Variable> {
+        input.silu()
+    }
+
+    fn parameters(&self) -> Vec<Parameter> {
+        vec![]
+    }
+}
+
+/// SwiGLU fused activation: `swiglu(gate, value) = silu(gate) * value`.
+///
+/// This is the element-wise step inside Llama-style gated FFN blocks:
+///
+/// ```text
+/// gate  = W_gate @ x
+/// value = W_value @ x
+/// h     = silu(gate) * value
+/// out   = W_out @ h
+/// ```
+///
+/// SwiGLU is *not* a `Module` because it needs two inputs; call
+/// [`swiglu`] directly from your FFN implementation. Kept here so
+/// callers can import it from `nn::activation::swiglu`.
+pub fn swiglu(gate: &Variable, value: &Variable) -> Result<Variable> {
+    gate.silu()?.mul(value)
+}

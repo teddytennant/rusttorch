@@ -270,6 +270,77 @@ fn gradcheck_matmul_wrt_x() {
     assert_grads_close(&gx, &num_gx, "matmul_wrt_x");
 }
 
+// ---- SiLU / SwiGLU ----
+
+#[test]
+fn gradcheck_silu() {
+    // silu(x) = x * sigmoid(x). Smooth everywhere.
+    let x_vals = [-2.0_f32, -0.5, 0.3, 1.5, 3.0];
+    let shape = [5];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.silu().unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let silu = |v: f32| -> f32 { v * (1.0 / (1.0 + (-v).exp())) };
+    let num_gx = numerical_grad(&x_vals, |xv| xv.iter().map(|&v| silu(v)).sum());
+    assert_grads_close(&gx, &num_gx, "silu");
+}
+
+#[test]
+fn gradcheck_swiglu_wrt_gate() {
+    // swiglu(gate, value) = silu(gate) * value
+    use rusttorch_core::nn::swiglu;
+
+    let gate_vals = [0.5_f32, -0.3, 1.2, -1.5];
+    let value_vals = [2.0_f32, -1.0, 0.5, 1.5];
+    let shape = [4];
+
+    let gate = Variable::new(Tensor::from_vec(gate_vals.to_vec(), &shape), true);
+    let value = Variable::new(Tensor::from_vec(value_vals.to_vec(), &shape), false);
+    let loss = swiglu(&gate, &value).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gg = gate.grad().unwrap().to_vec_f32();
+    let silu = |v: f32| -> f32 { v * (1.0 / (1.0 + (-v).exp())) };
+    let num_gg = numerical_grad(&gate_vals, |gv| {
+        gv.iter()
+            .zip(value_vals.iter())
+            .map(|(&g, &v)| silu(g) * v)
+            .sum()
+    });
+    assert_grads_close(&gg, &num_gg, "swiglu_gate");
+}
+
+#[test]
+fn gradcheck_swiglu_wrt_value() {
+    use rusttorch_core::nn::swiglu;
+
+    let gate_vals = [0.5_f32, -0.3, 1.2, -1.5];
+    let value_vals = [2.0_f32, -1.0, 0.5, 1.5];
+    let shape = [4];
+
+    let gate = Variable::new(Tensor::from_vec(gate_vals.to_vec(), &shape), false);
+    let value = Variable::new(Tensor::from_vec(value_vals.to_vec(), &shape), true);
+    let loss = swiglu(&gate, &value).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gv = value.grad().unwrap().to_vec_f32();
+    // dL/d(value_i) = silu(gate_i)
+    let silu = |v: f32| -> f32 { v * (1.0 / (1.0 + (-v).exp())) };
+    for (i, (&g, expected)) in gv
+        .iter()
+        .zip(gate_vals.iter().map(|&g| silu(g)))
+        .enumerate()
+    {
+        assert!(
+            (g - expected).abs() < 1e-5,
+            "swiglu grad_value[{i}]: got {g}, want {expected}"
+        );
+    }
+}
+
 // ---- RMSNorm ----
 
 #[test]

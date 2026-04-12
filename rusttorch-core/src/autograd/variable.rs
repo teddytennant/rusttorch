@@ -256,6 +256,15 @@ impl Variable {
     ) -> Result<Variable> {
         crate::autograd::ops::rms_norm_forward(self, norm_size, weight, eps)
     }
+
+    /// SiLU / Swish activation: `x * sigmoid(x)`.
+    ///
+    /// Composed from existing differentiable primitives (`sigmoid` and
+    /// element-wise `mul`), so it gets backward support for free.
+    pub fn silu(&self) -> Result<Variable> {
+        let s = self.sigmoid()?;
+        self.mul(&s)
+    }
 }
 
 impl fmt::Debug for Variable {

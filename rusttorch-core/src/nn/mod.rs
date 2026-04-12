@@ -66,7 +66,7 @@ pub mod transformer;
 #[cfg(test)]
 mod tests;
 
-pub use activation::{ReLU, Sigmoid, Tanh};
+pub use activation::{swiglu, ReLU, SiLU, Sigmoid, Tanh};
 pub use attention::MultiHeadAttention;
 pub use batchnorm::BatchNorm2d;
 pub use conv2d::Conv2d;
