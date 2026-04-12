@@ -244,6 +244,18 @@ impl Variable {
     ) -> Result<Variable> {
         crate::autograd::ops::layer_norm_forward(self, norm_size, weight, bias, eps)
     }
+
+    /// RMSNorm over the last `norm_size` elements:
+    /// `y = x * (1/sqrt(mean(x^2) + eps)) * weight`. No mean subtraction,
+    /// no bias — the point of RMSNorm vs LayerNorm.
+    pub fn rms_norm(
+        &self,
+        norm_size: usize,
+        weight: Option<&Variable>,
+        eps: f32,
+    ) -> Result<Variable> {
+        crate::autograd::ops::rms_norm_forward(self, norm_size, weight, eps)
+    }
 }
 
 impl fmt::Debug for Variable {

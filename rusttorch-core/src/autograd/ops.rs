@@ -2189,6 +2189,188 @@ impl GradFn for LayerNormBackward {
     }
 }
 
+// ---- RMSNorm ----
+//
+// RMSNorm (Zhang & Sennrich, "Root Mean Square Layer Normalization", 2019;
+// popularized by Llama) is LayerNorm without mean-centering:
+//
+//     y = x * inv_rms * weight
+//     inv_rms = 1 / sqrt(mean(x^2) + eps)
+//
+// Cheaper than LayerNorm (no mean computation, no bias) and empirically
+// equally effective for large language models. `norm_size` is the product
+// of the dimensions that are normalized over — typically the last dim.
+
+struct RmsNormBackward {
+    input: Variable,
+    weight: Option<Variable>,
+    x: Tensor,       // raw input, reused for grad_input and grad_weight
+    inv_rms: Tensor, // scalar per instance — shape = [num_instances]
+    normalized_size: usize,
+}
+
+impl GradFn for RmsNormBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let go = grad_output.to_vec_f32();
+        let shape = grad_output.shape();
+        let x = self.x.to_vec_f32();
+        let inv_rms = self.inv_rms.to_vec_f32();
+        let n = self.normalized_size;
+        let n_f = n as f32;
+        let num_instances = go.len() / n;
+
+        // grad_weight_j = Σ_instances (g_j * x_j * inv_rms)
+        let grad_weight = if self.weight.as_ref().is_some_and(|w| w.requires_grad()) {
+            let mut gw = vec![0.0f32; n];
+            for (i, &ir) in inv_rms.iter().enumerate().take(num_instances) {
+                let off = i * n;
+                for j in 0..n {
+                    gw[j] += go[off + j] * x[off + j] * ir;
+                }
+            }
+            Some(Tensor::from_vec(gw, &[n]))
+        } else {
+            None
+        };
+
+        // grad_input per-instance:
+        //   s = Σ_j g_j * w_j * x_j
+        //   dL/dx_k = inv_rms * (g_k * w_k - x_k * inv_rms^2 * s / n)
+        let grad_input = if self.input.requires_grad() {
+            let weight_data = self.weight.as_ref().map(|w| w.tensor().to_vec_f32());
+            let mut dx = vec![0.0f32; go.len()];
+
+            for (i, &ir) in inv_rms.iter().enumerate().take(num_instances) {
+                let off = i * n;
+
+                // Scale grad_output by weight if present.
+                let mut gw_scaled = vec![0.0f32; n];
+                for j in 0..n {
+                    gw_scaled[j] = match &weight_data {
+                        Some(w) => go[off + j] * w[j],
+                        None => go[off + j],
+                    };
+                }
+
+                // s = Σ_j gw_scaled[j] * x[j]
+                let mut s = 0.0f32;
+                for j in 0..n {
+                    s += gw_scaled[j] * x[off + j];
+                }
+
+                let ir2_over_n = ir * ir / n_f;
+                for j in 0..n {
+                    dx[off + j] = ir * (gw_scaled[j] - x[off + j] * ir2_over_n * s);
+                }
+            }
+            Some(Tensor::from_vec(dx, shape))
+        } else {
+            None
+        };
+
+        let mut grads = vec![grad_input];
+        if self.weight.is_some() {
+            grads.push(grad_weight);
+        }
+        Ok(grads)
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        let mut inputs = vec![self.input.clone()];
+        if let Some(ref w) = self.weight {
+            inputs.push(w.clone());
+        }
+        inputs
+    }
+}
+
+/// RMSNorm forward pass.
+///
+/// Normalizes over the last `norm_size` elements:
+///   y = x * (1 / sqrt(mean(x²) + eps)) * weight
+///
+/// `weight` is optional; if `None`, no affine scaling is applied and the
+/// output is just `x * inv_rms`. There is no bias term — that is the
+/// entire point of RMSNorm vs LayerNorm.
+pub fn rms_norm_forward(
+    input: &Variable,
+    norm_size: usize,
+    weight: Option<&Variable>,
+    eps: f32,
+) -> Result<Variable> {
+    let tensor = input.tensor();
+    let data = tensor.to_vec_f32();
+    let shape = tensor.shape().to_vec();
+    let total = data.len();
+
+    if norm_size == 0 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "norm_size".to_string(),
+            reason: "norm_size must be non-zero".to_string(),
+        });
+    }
+    if !total.is_multiple_of(norm_size) {
+        return Err(TensorError::InvalidArgument {
+            parameter: "norm_size".to_string(),
+            reason: format!(
+                "tensor size {} not divisible by norm_size {}",
+                total, norm_size
+            ),
+        });
+    }
+
+    let num_instances = total / norm_size;
+    let mut output = vec![0.0f32; total];
+    let mut inv_rms_vec = vec![0.0f32; num_instances];
+
+    let weight_data = weight.map(|w| w.tensor().to_vec_f32());
+
+    for (i, inv_rms_slot) in inv_rms_vec.iter_mut().enumerate().take(num_instances) {
+        let off = i * norm_size;
+
+        // mean(x²)
+        let mut sum_sq = 0.0f32;
+        for j in 0..norm_size {
+            let v = data[off + j];
+            sum_sq += v * v;
+        }
+        let mean_sq = sum_sq / norm_size as f32;
+
+        let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+        *inv_rms_slot = inv_rms;
+
+        for j in 0..norm_size {
+            let normalized = data[off + j] * inv_rms;
+            output[off + j] = match &weight_data {
+                Some(w) => normalized * w[j],
+                None => normalized,
+            };
+        }
+    }
+
+    let result = Tensor::from_vec(output, &shape);
+    let x_tensor = Tensor::from_vec(data, &shape);
+    let inv_rms_tensor = Tensor::from_vec(inv_rms_vec, &[num_instances]);
+
+    let needs_grad =
+        input.requires_grad() || weight.is_some_and(|w| w.requires_grad());
+
+    if needs_grad {
+        Ok(Variable::from_op(
+            result,
+            Box::new(RmsNormBackward {
+                input: input.clone(),
+                weight: weight.cloned(),
+                x: x_tensor,
+                inv_rms: inv_rms_tensor,
+                normalized_size: norm_size,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
 /// Layer normalization forward pass.
 /// Input: any shape. Normalizes over the last `norm_size` elements.
 /// weight/bias: optional affine parameters of shape [norm_size]

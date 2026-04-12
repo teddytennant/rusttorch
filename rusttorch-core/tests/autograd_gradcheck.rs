@@ -270,6 +270,98 @@ fn gradcheck_matmul_wrt_x() {
     assert_grads_close(&gx, &num_gx, "matmul_wrt_x");
 }
 
+// ---- RMSNorm ----
+
+#[test]
+fn rms_norm_forward_matches_reference() {
+    // Reference: y = x * (1/sqrt(mean(x^2) + eps)) * weight (no bias).
+    let x_vals: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let w_vals: [f32; 3] = [0.5, 1.0, 2.0];
+    let eps = 1e-6_f32;
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &[2, 3]), false);
+    let w = Variable::new(Tensor::from_vec(w_vals.to_vec(), &[3]), false);
+    let y = x.rms_norm(3, Some(&w), eps).unwrap();
+    let got = y.tensor().to_vec_f32();
+
+    // Row 0: mean(1 + 4 + 9)/3 = 14/3, inv_rms = 1/sqrt(14/3 + eps)
+    // Row 1: mean(16 + 25 + 36)/3 = 77/3, inv_rms = 1/sqrt(77/3 + eps)
+    for row in 0..2 {
+        let mean_sq: f32 = (0..3)
+            .map(|j| x_vals[row * 3 + j] * x_vals[row * 3 + j])
+            .sum::<f32>()
+            / 3.0;
+        let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+        for j in 0..3 {
+            let expected = x_vals[row * 3 + j] * inv_rms * w_vals[j];
+            assert!(
+                (got[row * 3 + j] - expected).abs() < 1e-5,
+                "rms_norm mismatch at [{row}, {j}]: got {} want {expected}",
+                got[row * 3 + j]
+            );
+        }
+    }
+}
+
+#[test]
+fn gradcheck_rms_norm_wrt_input() {
+    // Small 1-row test so numerical_grad is tractable.
+    let x_vals = [0.3_f32, -1.2, 2.5, 0.8];
+    let w_vals = [1.0_f32, 0.8, 1.2, 0.9];
+    let eps = 1e-5_f32;
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &[1, 4]), true);
+    let w = Variable::new(Tensor::from_vec(w_vals.to_vec(), &[4]), false);
+    let loss = x.rms_norm(4, Some(&w), eps).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+
+    // Reference: sum(rms_norm(x, w))
+    let ref_rms_norm_sum = |xv: &[f32]| -> f32 {
+        let mean_sq: f32 = xv.iter().map(|v| v * v).sum::<f32>() / xv.len() as f32;
+        let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+        xv.iter()
+            .zip(w_vals.iter())
+            .map(|(x, w)| x * inv_rms * w)
+            .sum()
+    };
+    let num_gx = numerical_grad(&x_vals, ref_rms_norm_sum);
+    // RMSNorm's Jacobian is sensitive so use a slightly looser tolerance.
+    for (i, (&a, &n)) in gx.iter().zip(num_gx.iter()).enumerate() {
+        assert!(
+            (a - n).abs() < 5e-3,
+            "rms_norm grad[{i}]: analytical={a}, numerical={n}"
+        );
+    }
+}
+
+#[test]
+fn gradcheck_rms_norm_wrt_weight() {
+    let x_vals = [0.5_f32, 1.5, -0.25, 2.0];
+    let w_vals = [1.0_f32, 1.0, 1.0, 1.0];
+    let eps = 1e-5_f32;
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &[1, 4]), false);
+    let w = Variable::new(Tensor::from_vec(w_vals.to_vec(), &[4]), true);
+    let loss = x.rms_norm(4, Some(&w), eps).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gw = w.grad().unwrap().to_vec_f32();
+
+    // dy/dw_j = x_j * inv_rms, so grad_w_j (for loss = sum(y)) = x_j * inv_rms
+    let mean_sq: f32 = x_vals.iter().map(|v| v * v).sum::<f32>() / x_vals.len() as f32;
+    let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+    for j in 0..4 {
+        let expected = x_vals[j] * inv_rms;
+        assert!(
+            (gw[j] - expected).abs() < 1e-5,
+            "rms_norm grad_w[{j}]: got {} want {expected}",
+            gw[j]
+        );
+    }
+}
+
 // ---- Composite ----
 
 #[test]
