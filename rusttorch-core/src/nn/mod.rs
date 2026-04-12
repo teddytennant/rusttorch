@@ -68,7 +68,7 @@ pub mod transformer;
 mod tests;
 
 pub use activation::{swiglu, ReLU, SiLU, Sigmoid, Tanh};
-pub use attention::MultiHeadAttention;
+pub use attention::{scaled_dot_product_attention, MultiHeadAttention};
 pub use batchnorm::BatchNorm2d;
 pub use conv2d::Conv2d;
 pub use dropout::Dropout;

@@ -9,6 +9,32 @@ use crate::error::{Result, TensorError};
 use crate::nn::parameter::Parameter;
 use crate::nn::state_dict::StateDict;
 
+/// Scaled dot-product attention, mirroring PyTorch's
+/// `torch.nn.functional.scaled_dot_product_attention`.
+///
+/// `q`, `k`, `v` must have shape `[B, seq, d]`. When `is_causal=true`
+/// a lower-triangular mask is applied so position `i` only attends to
+/// positions `0..=i`; used for autoregressive generation.
+///
+/// This is a thin wrapper around the existing autograd kernel — both
+/// forward and backward are already tracked. It discards the attention
+/// weights that the lower-level function returns; callers who need
+/// them can call `autograd::ops::scaled_dot_product_attention_forward`
+/// directly.
+pub fn scaled_dot_product_attention(
+    q: &Variable,
+    k: &Variable,
+    v: &Variable,
+    is_causal: bool,
+) -> Result<Variable> {
+    let (out, _weights) = if is_causal {
+        crate::autograd::ops::scaled_dot_product_attention_causal_forward(q, k, v)?
+    } else {
+        crate::autograd::ops::scaled_dot_product_attention_forward(q, k, v)?
+    };
+    Ok(out)
+}
+
 /// Multi-Head Attention module.
 ///
 /// Input: [batch, seq_len, d_model]

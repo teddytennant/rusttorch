@@ -433,6 +433,68 @@ fn gradcheck_rms_norm_wrt_weight() {
     }
 }
 
+// ---- Scaled dot-product attention ----
+
+#[test]
+fn sdpa_causal_masks_future_positions() {
+    use rusttorch_core::nn::scaled_dot_product_attention;
+
+    // Build Q = K = V = identity-ish for a single batch, 3-token sequence,
+    // 2 embedding dims. With causal masking, position 0 should only see
+    // itself, position 1 sees positions 0 and 1, etc.
+    let q = Variable::new(
+        Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], &[1, 3, 2]),
+        false,
+    );
+    let k = q.clone();
+    let v = Variable::new(
+        Tensor::from_vec(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0], &[1, 3, 2]),
+        false,
+    );
+
+    let out = scaled_dot_product_attention(&q, &k, &v, true).unwrap();
+    let out_data = out.tensor().to_vec_f32();
+    assert_eq!(out.shape(), vec![1, 3, 2]);
+
+    // First token can only attend to itself, so its output must equal v[0].
+    assert!(
+        (out_data[0] - 10.0).abs() < 1e-4,
+        "pos 0 attends only to self: got {} want {}",
+        out_data[0],
+        10.0
+    );
+    assert!(
+        (out_data[1] - 20.0).abs() < 1e-4,
+        "pos 0 attends only to self: got {} want {}",
+        out_data[1],
+        20.0
+    );
+}
+
+#[test]
+fn sdpa_non_causal_sees_all_positions() {
+    use rusttorch_core::nn::scaled_dot_product_attention;
+
+    // With uniform Q = zeros, attention weights are uniform over K and
+    // the output is the mean of V along the sequence axis.
+    let q = Variable::new(Tensor::from_vec(vec![0.0; 6], &[1, 3, 2]), false);
+    let k = Variable::new(Tensor::from_vec(vec![0.0; 6], &[1, 3, 2]), false);
+    let v = Variable::new(
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 3, 2]),
+        false,
+    );
+
+    let out = scaled_dot_product_attention(&q, &k, &v, false).unwrap();
+    let out_data = out.tensor().to_vec_f32();
+    // Each query position's output = (v[0] + v[1] + v[2]) / 3
+    //                              = ([1,2] + [3,4] + [5,6]) / 3
+    //                              = [3.0, 4.0]
+    for pos in 0..3 {
+        assert!((out_data[pos * 2] - 3.0).abs() < 1e-4);
+        assert!((out_data[pos * 2 + 1] - 4.0).abs() < 1e-4);
+    }
+}
+
 // ---- GroupNorm ----
 
 #[test]
