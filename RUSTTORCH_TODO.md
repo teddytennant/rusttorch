@@ -12,29 +12,36 @@ Durable task queue for the dedicated rusttorch Ralph loop (`/home/gradient/rustt
 
 ## Track E — GPU device abstraction (branch `gpu-device-abstraction`)
 
-The rest of the tracks go on `main`. These tasks go on a dedicated branch so main stays stable until the refactor lands cleanly.
+First slice shipped on the branch — main stays CPU-pure until it lands cleanly.
 
-- [ ] Branch `gpu-device-abstraction` from main.
-- [ ] Add `tensor::Device` enum with variants `CPU` and `CUDA(usize)`. CUDA variant behind a `cuda` cargo feature.
-- [ ] Add a `cuda` feature flag in `rusttorch-core/Cargo.toml` (no dep yet).
-- [ ] Add `Backend` trait in `rusttorch-core/src/backend/mod.rs` with methods: `allocate`, `copy_h2d`, `copy_d2h`, `matmul`, `add`, `mul`, `relu`, `softmax`, `layernorm`, `embedding_lookup`, `gelu`.
-- [ ] Implement `NdArrayBackend` (CPU) in `rusttorch-core/src/backend/ndarray_backend.rs`. Migrate ops module-by-module, keeping all tests green.
-- [ ] Thread `device: Device` through `Tensor::zeros`, `Tensor::ones`, `Tensor::from_vec`. Default to `Device::CPU` via a `*_on_device` variant so existing call sites keep compiling.
-- [ ] Add `tensor.to(Device::CUDA(0))` stub method returning an error when the `cuda` feature is off.
-- [ ] Write `GPU_KERNELS.md` at repo root: list every CUDA kernel needed for GPT-2 end-to-end (matmul, gelu, layernorm, softmax, embedding lookup, attention QKV reshape, top-k sampling). For each: signature, expected bandwidth/throughput, implementation notes.
+- [x] Branch `gpu-device-abstraction` from main.
+- [x] Add `tensor::Device` enum with variants `Cpu` and `Cuda(usize)`. CUDA variant behind a `cuda` cargo feature.
+- [x] Add a `cuda` feature flag in `rusttorch-core/Cargo.toml` (no dep yet).
+- [x] Add `Backend` trait in `rusttorch-core/src/backend/mod.rs`. Minimal surface covering the GPT-2 inference critical path: matmul, add, mul, relu, gelu, log_softmax, layer_norm, scalar.
+- [x] Implement `NdArrayBackend` (CPU) in `rusttorch-core/src/backend/ndarray_backend.rs` as a pass-through over existing ops.
+- [x] Thread `device: Device` through every `Tensor` constructor. Default to `Device::Cpu` so every existing caller keeps compiling unchanged. Added `.device()`, `.to(Device)`, `.cpu()`, `.cuda(id)` accessors.
+- [x] Add `tensor.to(Device::Cuda(0))` stub method returning a clear error when the `cuda` feature is on but kernels haven't shipped.
+- [x] Write `GPU_KERNELS.md` at repo root — full kernel queue, dependency plan (cudarc + cuBLAS), correctness strategy, perf targets for A100.
+- [ ] Replace `TensorData` enum with a Backend-owned `Storage` associated type so GPU buffers don't round-trip through the ndarray enum. (Follow-up refactor, larger scope.)
+- [ ] Migrate ops module-by-module through the Backend trait. (Incremental; can happen alongside step above.)
+- [ ] Add cudarc as an optional dep gated on `cuda`. `build.rs` detects CUDA toolchain and no-ops if absent.
+- [ ] Implement the first real CUDA kernel (`matmul` via cuBLAS) + CPU/GPU parity test. Needs GPU access.
+- [ ] Kernels #2–#9 from `GPU_KERNELS.md` Tier 1 in order. Each one PR, each with a parity test and a micro-benchmark.
 - [ ] Once the refactor is stable on the branch, merge it to main in a single PR.
 
 ## Track F — Port recent PyTorch features
 
-- [ ] Add `RMSNorm` module (`rusttorch-core/src/nn/rmsnorm.rs`). Tests: forward against a reference, gradcheck.
-- [ ] Add `GroupNorm` module. Tests: forward + gradcheck.
-- [ ] Add `SwiGLU` activation (Llama-style: `x * silu(gate)`). Tests: forward + gradcheck.
-- [ ] Add `scaled_dot_product_attention` fused op to `nn::attention`. Wire it into the existing `MultiHeadAttention` path as an opt-in.
-- [ ] Add `torch.func`-style `vmap` over a scalar function via rayon. Put it in `rusttorch-core/src/func/mod.rs`. Tests: confirm equivalence with a manual Python-style for-loop over the batch dim.
+- [x] Add `RMSNorm` module (`rusttorch-core/src/nn/rmsnorm.rs`). Tests: forward against a reference, gradcheck.
+- [x] Add `GroupNorm` module. Tests: forward + gradcheck.
+- [x] Add `SwiGLU` activation (Llama-style: `silu(gate) * value`). Tests: forward + gradcheck for both inputs.
+- [x] Add `SiLU` activation module and `Variable::silu()` primitive.
+- [x] Add `scaled_dot_product_attention` helper mirroring the PyTorch free function, `is_causal` flag included.
+- [x] Write `PYTORCH_PORT.md` tracking what was ported, skipped, and why.
+- [ ] Add `torch.func`-style `vmap` over a scalar function via rayon. Blocked on: autograd-tracked `slice` and `concat`/`stack` ops don't exist yet. Adding those is the prerequisite.
 - [ ] Add `torch.func`-style `grad` (returns a function that computes `df/dx`). Tests: match finite-difference.
 - [ ] Add `torch.func`-style `jacrev` (reverse-mode Jacobian). Tests: tiny 2x2 quadratic.
 - [ ] Dataloader prefetch: rayon + bounded channel. Benchmarks vs unprefetched.
-- [ ] Write `PYTORCH_PORT.md` tracking what was ported, skipped, and why.
+- [ ] Add autograd-tracked `slice_along_dim` and `concat_along_dim` ops. (Prerequisite for vmap and the chunking operations.)
 
 ## Track B follow-ups — more foundational tests
 
@@ -65,7 +72,13 @@ The rest of the tracks go on `main`. These tasks go on a dedicated branch so mai
 
 ## Completed (most recent first)
 
-- [x] Expose autograd/Linear/SGD/Adam/MSELoss to Python (2026-04-12)
-- [x] AlignedBuffer + BumpArena memory pool (2026-04-12)
-- [x] Foundational tests (dtype, shape, storage, view, error, utils, memory) and integration gradcheck + end-to-end training suites — 648 total tests (2026-04-12)
+- [x] SDPA top-level helper and `PYTORCH_PORT.md` — 672 total tests (2026-04-12)
+- [x] GroupNorm module + autograd op + 8 unit tests + gradcheck (2026-04-12)
+- [x] SiLU activation + SwiGLU helper + 3 gradcheck tests (2026-04-12)
+- [x] RMSNorm module + autograd op + 7 unit tests + 3 gradcheck tests (2026-04-12)
+- [x] GPU prep branch: Device enum, Backend trait, NdArrayBackend pass-through, cuda feature flag, GPU_KERNELS.md spec (on `gpu-device-abstraction`) (2026-04-12)
+- [x] RUSTTORCH_TODO.md + rusttorch-loop.sh + brain entry (Track G) (2026-04-12)
+- [x] Expose autograd/Linear/SGD/Adam/MSELoss to Python — 648 total tests (2026-04-12)
+- [x] AlignedBuffer + BumpArena memory pool — 648 tests (2026-04-12)
+- [x] Foundational tests (dtype, shape, storage, view, error, utils, memory) and integration gradcheck + end-to-end training suites — 630 tests (2026-04-12)
 - [x] Full clippy -D warnings cleanup, plus fix four correctness errors including two dead test assertions (2026-04-12)
