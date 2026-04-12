@@ -30,6 +30,11 @@ tempfile.workspace = true
 default = []
 ffi = []  # Enable C FFI exports for PyTorch integration
 datasets = ["ureq", "flate2", "tar"]  # Download and load standard datasets (MNIST, CIFAR-10, etc.)
+# Enables the Device::Cuda variant and CUDA-related backend plumbing.
+# No real CUDA kernels ship yet — the feature gates the API surface so
+# that downstream code can be written device-agnostically today and the
+# kernels can land later. See GPU_KERNELS.md for the work queue.
+cuda = []
 
 [[example]]
 name = "mnist"

@@ -4,6 +4,7 @@
 //! Designed to be a drop-in replacement for performance-critical PyTorch CPU operations.
 
 pub mod autograd;
+pub mod backend;
 pub mod data;
 pub mod error;
 pub mod memory;
@@ -16,10 +17,11 @@ pub mod utils;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
+pub use backend::{Backend, NdArrayBackend};
 pub use data::*;
 pub use error::{Result, TensorError};
 pub use ops::*;
-pub use tensor::{DType, Tensor, TensorView};
+pub use tensor::{DType, Device, Tensor, TensorView};
 
 #[cfg(test)]
 mod tests {

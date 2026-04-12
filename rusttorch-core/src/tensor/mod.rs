@@ -4,25 +4,39 @@
 //! designed to be similar to PyTorch's tensor API while leveraging Rust's
 //! safety guarantees.
 
+pub mod device;
 pub mod dtype;
 pub mod shape;
 pub mod storage;
 pub mod view;
 
 use crate::error::{Result, TensorError};
+pub use device::Device;
 pub use dtype::DType;
 use ndarray::{Array, IxDyn};
 use std::fmt;
 use std::sync::Arc;
 pub use view::{TensorView as ZeroCopyView, TensorViewMut as ZeroCopyViewMut};
 
-/// A multi-dimensional tensor with dynamic shape
+/// A multi-dimensional tensor with dynamic shape.
+///
+/// Tensors carry three pieces of metadata:
+/// - `data`: the actual storage (an ndarray `Array` today; will become a
+///   trait-object backend as GPU support lands).
+/// - `dtype`: element type (`f32`, `f64`, `i32`, `i64`).
+/// - `device`: physical location of the storage (`Cpu` or `Cuda(id)`).
+///
+/// All existing constructors default `device` to `Device::Cpu` so this
+/// refactor does not break any caller. Ops that produce new tensors
+/// inherit the input device via `from_data_on_device`.
 #[derive(Debug, Clone)]
 pub struct Tensor {
     /// The underlying data storage
     data: Arc<TensorData>,
     /// Data type of tensor elements
     dtype: DType,
+    /// Physical device where the data lives
+    device: Device,
 }
 
 /// Internal tensor data representation
@@ -46,6 +60,7 @@ impl Tensor {
         Tensor {
             data: Arc::new(data),
             dtype,
+            device: Device::Cpu,
         }
     }
 
@@ -60,6 +75,7 @@ impl Tensor {
         Tensor {
             data: Arc::new(data),
             dtype,
+            device: Device::Cpu,
         }
     }
 
@@ -70,6 +86,7 @@ impl Tensor {
         Tensor {
             data: Arc::new(TensorData::Float32(array)),
             dtype: DType::Float32,
+            device: Device::Cpu,
         }
     }
 
@@ -84,6 +101,7 @@ impl Tensor {
         Ok(Tensor {
             data: Arc::new(TensorData::Float32(array)),
             dtype: DType::Float32,
+            device: Device::Cpu,
         })
     }
 
@@ -98,6 +116,7 @@ impl Tensor {
         Ok(Tensor {
             data: Arc::new(TensorData::Float64(array)),
             dtype: DType::Float64,
+            device: Device::Cpu,
         })
     }
 
@@ -112,6 +131,7 @@ impl Tensor {
         Ok(Tensor {
             data: Arc::new(TensorData::Int32(array)),
             dtype: DType::Int32,
+            device: Device::Cpu,
         })
     }
 
@@ -126,6 +146,7 @@ impl Tensor {
         Ok(Tensor {
             data: Arc::new(TensorData::Int64(array)),
             dtype: DType::Int64,
+            device: Device::Cpu,
         })
     }
 
@@ -169,16 +190,80 @@ impl Tensor {
         self.dtype
     }
 
+    /// Get the device this tensor's storage lives on.
+    #[inline]
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
+    /// Move this tensor to a target device.
+    ///
+    /// For CPU → CPU this is a cheap clone of the Arc. CUDA support is
+    /// gated behind the `cuda` feature; without it, requesting a CUDA
+    /// device returns an error. When the feature is on but no CUDA
+    /// backend has been compiled in yet (the current state), CUDA
+    /// transfers likewise return a clear error so callers fail loudly
+    /// rather than silently running on CPU.
+    pub fn to(&self, device: Device) -> Result<Self> {
+        if self.device == device {
+            return Ok(self.clone());
+        }
+        match device {
+            Device::Cpu => {
+                // From CUDA back to CPU — today there is no CUDA storage,
+                // so this arm is unreachable in practice. Kept for API
+                // completeness.
+                Ok(Tensor {
+                    data: self.data.clone(),
+                    dtype: self.dtype,
+                    device: Device::Cpu,
+                })
+            }
+            #[cfg(feature = "cuda")]
+            Device::Cuda(_) => Err(TensorError::InvalidArgument {
+                parameter: "device".to_string(),
+                reason: "CUDA backend is not yet implemented; see GPU_KERNELS.md"
+                    .to_string(),
+            }),
+        }
+    }
+
+    /// Shorthand: ensure this tensor lives on the CPU.
+    pub fn cpu(&self) -> Self {
+        if self.device.is_cpu() {
+            self.clone()
+        } else {
+            // Unreachable today since the only storage is CPU, but kept
+            // so callers can write device-agnostic code.
+            Tensor {
+                data: self.data.clone(),
+                dtype: self.dtype,
+                device: Device::Cpu,
+            }
+        }
+    }
+
+    /// Shorthand: move this tensor to the given CUDA device. Requires the
+    /// `cuda` feature.
+    #[cfg(feature = "cuda")]
+    pub fn cuda(&self, id: usize) -> Result<Self> {
+        self.to(Device::Cuda(id))
+    }
+
     /// Get a reference to the internal data (for operations)
     pub(crate) fn data(&self) -> &TensorData {
         &self.data
     }
 
-    /// Create a tensor from TensorData (for operations)
+    /// Create a tensor from TensorData (for operations). The resulting
+    /// tensor lives on `Device::Cpu` because TensorData is an ndarray
+    /// enum — GPU storage will eventually route through the Backend
+    /// trait and not this path.
     pub(crate) fn from_data(data: TensorData, dtype: DType) -> Self {
         Tensor {
             data: Arc::new(data),
             dtype,
+            device: Device::Cpu,
         }
     }
 
@@ -258,7 +343,10 @@ impl fmt::Display for Tensor {
 
 impl PartialEq for Tensor {
     fn eq(&self, other: &Self) -> bool {
-        if self.shape() != other.shape() || self.dtype() != other.dtype() {
+        if self.shape() != other.shape()
+            || self.dtype() != other.dtype()
+            || self.device() != other.device()
+        {
             return false;
         }
 
@@ -303,5 +391,53 @@ mod tests {
         let t = Tensor::from_vec(data, &[2, 2]);
         assert_eq!(t.shape(), &[2, 2]);
         assert_eq!(t.dtype(), DType::Float32);
+    }
+
+    #[test]
+    fn tensors_default_to_cpu_device() {
+        assert_eq!(Tensor::zeros(&[2, 2], DType::Float32).device(), Device::Cpu);
+        assert_eq!(Tensor::ones(&[2, 2], DType::Float32).device(), Device::Cpu);
+        assert_eq!(Tensor::from_vec(vec![1.0, 2.0], &[2]).device(), Device::Cpu);
+        assert_eq!(Tensor::scalar(1.0).device(), Device::Cpu);
+        assert_eq!(Tensor::full(&[3], 0.5).device(), Device::Cpu);
+    }
+
+    #[test]
+    fn to_cpu_is_identity_clone() {
+        let t = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+        let moved = t.to(Device::Cpu).unwrap();
+        assert_eq!(moved.device(), Device::Cpu);
+        assert_eq!(moved.to_vec_f32(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn cpu_shorthand() {
+        let t = Tensor::from_vec(vec![1.0, 2.0], &[2]).cpu();
+        assert!(t.device().is_cpu());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn to_cuda_is_error_without_kernels() {
+        let t = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        let r = t.to(Device::Cuda(0));
+        assert!(
+            r.is_err(),
+            "CUDA transfer should return a clear error until kernels ship"
+        );
+    }
+
+    #[test]
+    fn ones_like_and_zeros_like_preserve_device() {
+        let t = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+        assert_eq!(t.ones_like().device(), Device::Cpu);
+        assert_eq!(t.zeros_like().device(), Device::Cpu);
+    }
+
+    #[test]
+    fn partial_eq_respects_device() {
+        let a = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        let b = Tensor::from_vec(vec![1.0, 2.0], &[2]);
+        assert_eq!(a, b);
     }
 }
