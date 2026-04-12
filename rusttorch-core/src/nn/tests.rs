@@ -1,4 +1,9 @@
 //! Tests for the nn module.
+//
+// `identity_op` / `erasing_op` are allowed because many tests use
+// `N * C * H * W`-style shape expressions for documentation clarity
+// (e.g. `1 * 3 * 32 * 32` reads as "batch=1, C=3, 32x32").
+#![allow(clippy::identity_op, clippy::erasing_op)]
 
 use crate::autograd::Variable;
 use crate::nn::*;
@@ -34,7 +39,7 @@ fn test_parameter_uniform() {
     assert_eq!(p.shape(), vec![10]);
     let data = p.tensor().to_vec_f32();
     for &v in &data {
-        assert!(v >= -0.5 && v <= 0.5, "Value {} outside bounds", v);
+        assert!((-0.5..=0.5).contains(&v), "Value {} outside bounds", v);
     }
 }
 
@@ -1275,8 +1280,8 @@ fn test_cnn_with_batchnorm_training() {
     let mut optimizer = Adam::new(all_params, 0.02);
 
     // Use different patterns to ensure learnability
-    let pattern_a = vec![0.0f32; 25];
-    let pattern_b = vec![1.0f32; 25];
+    let pattern_a = [0.0f32; 25];
+    let pattern_b = [1.0f32; 25];
 
     let mut last_loss = f32::MAX;
 
@@ -1328,13 +1333,8 @@ fn test_xor_training() {
     let loss_fn = MSELoss::new();
     let mut optimizer = Adam::new(model.parameters(), 0.05);
 
-    let inputs = vec![
-        vec![0.0, 0.0],
-        vec![0.0, 1.0],
-        vec![1.0, 0.0],
-        vec![1.0, 1.0],
-    ];
-    let targets = vec![0.0, 1.0, 1.0, 0.0];
+    let inputs = [[0.0f32, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]];
+    let targets = [0.0f32, 1.0, 1.0, 0.0];
 
     let mut last_loss = f32::MAX;
 
@@ -1345,7 +1345,7 @@ fn test_xor_training() {
         for (inp, &tgt) in inputs.iter().zip(targets.iter()) {
             optimizer.zero_grad();
 
-            let x = Variable::new(Tensor::from_vec(inp.clone(), &[1, 2]), false);
+            let x = Variable::new(Tensor::from_vec(inp.to_vec(), &[1, 2]), false);
             let y = Variable::new(Tensor::from_vec(vec![tgt], &[1, 1]), false);
 
             let pred = model.forward(&x).unwrap();
@@ -1368,7 +1368,7 @@ fn test_xor_training() {
 
     // Verify predictions
     for (inp, &expected) in inputs.iter().zip(targets.iter()) {
-        let x = Variable::new(Tensor::from_vec(inp.clone(), &[1, 2]), false);
+        let x = Variable::new(Tensor::from_vec(inp.to_vec(), &[1, 2]), false);
         let pred = model.forward(&x).unwrap();
         let val = pred.tensor().to_vec_f32()[0];
         assert!(
@@ -2738,7 +2738,7 @@ fn test_clip_grad_norm_no_clip_needed() {
     sum.backward().unwrap();
 
     // grad = [1, 1, 1], norm = sqrt(3) ≈ 1.732
-    let norm = super::clip_grad_norm(&[p.clone()], 10.0);
+    let norm = super::clip_grad_norm(std::slice::from_ref(&p), 10.0);
     assert!((norm - 3.0f32.sqrt()).abs() < 1e-4, "norm = {}", norm);
 
     // Gradients should be unchanged
@@ -2755,7 +2755,7 @@ fn test_clip_grad_norm_clips() {
     sum.backward().unwrap();
     // grad = [1, 1], norm = sqrt(2) ≈ 1.414
 
-    let norm = super::clip_grad_norm(&[p.clone()], 0.5);
+    let norm = super::clip_grad_norm(std::slice::from_ref(&p), 0.5);
     assert!((norm - 2.0f32.sqrt()).abs() < 1e-4);
 
     // After clipping, norm should be ≈ 0.5
@@ -2795,7 +2795,7 @@ fn test_clip_grad_value() {
     // Set a gradient with large values
     p.set_grad(Tensor::from_vec(vec![10.0, -5.0, 0.3], &[1, 3]));
 
-    super::clip_grad_value(&[p.clone()], 2.0);
+    super::clip_grad_value(std::slice::from_ref(&p), 2.0);
 
     let g = p.grad().unwrap().to_vec_f32();
     assert!(
@@ -2816,7 +2816,7 @@ fn test_clip_grad_value_no_clip_needed() {
     let p = super::Parameter::new(Tensor::from_vec(vec![1.0], &[1, 1]), "w");
     p.set_grad(Tensor::from_vec(vec![0.5], &[1, 1]));
 
-    super::clip_grad_value(&[p.clone()], 10.0);
+    super::clip_grad_value(std::slice::from_ref(&p), 10.0);
 
     let g = p.grad().unwrap().to_vec_f32();
     assert!((g[0] - 0.5).abs() < 1e-5);
@@ -2973,7 +2973,7 @@ fn test_layer_norm_numerical_gradient() {
 
     // Numerical gradient via central differences
     let x_data = x.tensor().to_vec_f32();
-    let mut numerical_grad = vec![0.0f32; 3];
+    let mut numerical_grad = [0.0f32; 3];
     for i in 0..3 {
         let mut xp = x_data.clone();
         let mut xm = x_data.clone();

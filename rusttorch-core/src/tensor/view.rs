@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_tensor_view_creation() {
-        let data = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let data = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let shape = vec![2, 3];
         let strides = vec![3, 1]; // Row-major
 
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_tensor_view_indexing() {
-        let data = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let data = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let shape = vec![2, 3];
         let strides = vec![3, 1];
 
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_contiguous_check() {
-        let data = vec![1.0_f32; 12];
+        let data = [1.0_f32; 12];
 
         // Contiguous tensor
         let contiguous = unsafe {

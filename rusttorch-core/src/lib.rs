@@ -26,6 +26,6 @@ mod tests {
     #[test]
     fn test_library_loads() {
         // Basic smoke test to ensure library compiles
-        assert!(true);
+        let _ = crate::tensor::Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
     }
 }

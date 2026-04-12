@@ -3,6 +3,7 @@
 //! Uses numerical gradient checking to verify analytical gradients.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::autograd::Variable;
     use crate::tensor::Tensor;
@@ -566,7 +567,7 @@ mod tests {
 
         // d(mean((p-t)²))/dp_i = 2*(p_i - t_i)/n
         let grad = pred.grad().unwrap().to_vec_f32();
-        let expected = vec![
+        let expected = [
             2.0 * (0.5 - 1.0) / 3.0, // -0.333...
             2.0 * (0.8 - 0.0) / 3.0, // 0.533...
             2.0 * (0.2 - 0.0) / 3.0, // 0.133...

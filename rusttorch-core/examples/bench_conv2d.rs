@@ -2,6 +2,9 @@
 //!
 //! Usage: cargo run -p rusttorch-core --example bench_conv2d --release
 
+// `1 * C * H * W` shape expressions are kept for readability.
+#![allow(clippy::identity_op)]
+
 use rusttorch_core::autograd::variable::Variable;
 use rusttorch_core::nn::conv2d::Conv2d;
 use rusttorch_core::nn::module::Module;

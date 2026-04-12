@@ -1967,6 +1967,7 @@ pub fn adaptive_avg_pool2d_forward(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod im2col_tests {
     use super::*;
 

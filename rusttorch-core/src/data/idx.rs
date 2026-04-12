@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_parse_idx_zero_dims() {
-        let raw = vec![0x00, 0x00, 0x08, 0x00]; // 0 dimensions
+        let raw: [u8; 4] = [0x00, 0x00, 0x08, 0x00]; // 0 dimensions
         let result = parse_idx(&mut &raw[..]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("0 dimensions"));

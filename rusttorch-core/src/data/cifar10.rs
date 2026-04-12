@@ -381,8 +381,8 @@ mod tests {
         assert_eq!(labels.len(), 10);
         assert_eq!(images.len(), 10 * PIXELS_PER_IMAGE);
         // Labels should cycle 0-9
-        for i in 0..10 {
-            assert_eq!(labels[i], i as u8);
+        for (i, &label) in labels.iter().enumerate().take(10) {
+            assert_eq!(label, i as u8);
         }
         // First pixel of first image should be (0*7 + 0*3) % 256 / 255.0 = 0.0
         assert!((images[0] - 0.0).abs() < 1e-6);
@@ -396,7 +396,11 @@ mod tests {
 
         let (images, _) = parse_cifar10_batch(tmp.path()).unwrap();
         for &val in &images {
-            assert!(val >= 0.0 && val <= 1.0, "Pixel value {} out of [0,1]", val);
+            assert!(
+                (0.0..=1.0).contains(&val),
+                "Pixel value {} out of [0,1]",
+                val
+            );
         }
     }
 
@@ -404,7 +408,7 @@ mod tests {
     fn test_parse_batch_invalid_size() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         // Write data that's not a multiple of RECORD_SIZE
-        fs::write(tmp.path(), &[0u8; 100]).unwrap();
+        fs::write(tmp.path(), [0u8; 100]).unwrap();
 
         let result = parse_cifar10_batch(tmp.path());
         assert!(result.is_err());
