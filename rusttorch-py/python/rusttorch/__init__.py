@@ -7,6 +7,13 @@ PyTorch operations, implemented in Rust for improved safety and speed.
 
 from .rusttorch import (
     Tensor,
+    # Autograd / neural network primitives
+    Variable,
+    Parameter,
+    Linear,
+    MSELoss,
+    SGD,
+    Adam,
     # Element-wise operations
     add,
     mul,
@@ -69,6 +76,12 @@ from .rusttorch import (
 
 __all__ = [
     "Tensor",
+    "Variable",
+    "Parameter",
+    "Linear",
+    "MSELoss",
+    "SGD",
+    "Adam",
     # Element-wise operations
     "add",
     "mul",

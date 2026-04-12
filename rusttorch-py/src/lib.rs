@@ -3,9 +3,20 @@
 //! PyO3-based Python bindings for the RustTorch library.
 //! Provides a PyTorch-like API for high-performance tensor operations.
 
-use numpy::PyReadonlyArrayDyn;
+// The `#[pymethods]` attribute macro from pyo3 0.20 emits `impl` blocks
+// inside generated functions, which rustc ≥1.80 flags via the
+// `non_local_definitions` lint. The fix is a pyo3 upgrade; until then,
+// silence the lint at the crate level so builds stay warning-clean.
+#![allow(non_local_definitions)]
+
+use numpy::{PyReadonlyArrayDyn, ToPyArray};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use rusttorch_core::autograd::Variable as RustVariable;
+use rusttorch_core::nn::{
+    Adam as RustAdam, Linear as RustLinear, MSELoss as RustMSELoss, Module as _,
+    Optimizer as _, Parameter as RustParameter, SGD as RustSGD,
+};
 use rusttorch_core::{DType, Tensor as RustTensor};
 
 /// Helper to convert TensorError to PyValueError
@@ -466,9 +477,378 @@ fn train_val_test_split(
     )
 }
 
+// ===========================================================================
+// Autograd / nn bindings
+// ===========================================================================
+//
+// Variable uses Rc<RefCell<..>> internally, so every pyclass that wraps one
+// must be marked `unsendable`. This forbids the type from crossing Python
+// threads but avoids introducing locks on the fast path. Modules built on
+// Variable (Linear, MSELoss, SGD, Adam) inherit the same restriction.
+
+/// Python wrapper for autograd::Variable.
+#[pyclass(name = "Variable", unsendable)]
+#[derive(Clone)]
+struct PyVariable {
+    inner: RustVariable,
+}
+
+#[pymethods]
+impl PyVariable {
+    /// Construct a Variable from a 1-D Python list of f32s with an explicit
+    /// shape. `requires_grad=True` enables gradient tracking.
+    #[new]
+    #[pyo3(signature = (data, shape, requires_grad = false))]
+    fn new(data: Vec<f32>, shape: Vec<usize>, requires_grad: bool) -> Self {
+        PyVariable {
+            inner: RustVariable::new(RustTensor::from_vec(data, &shape), requires_grad),
+        }
+    }
+
+    /// Construct a Variable from a numpy array (f32, any rank).
+    #[staticmethod]
+    #[pyo3(signature = (array, requires_grad = false))]
+    fn from_numpy(array: PyReadonlyArrayDyn<f32>, requires_grad: bool) -> PyResult<Self> {
+        let shape: Vec<usize> = array.shape().to_vec();
+        let data = array
+            .as_slice()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Array must be contiguous"))?
+            .to_vec();
+        Ok(PyVariable {
+            inner: RustVariable::new(RustTensor::from_vec(data, &shape), requires_grad),
+        })
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        self.inner.shape()
+    }
+
+    fn numel(&self) -> usize {
+        self.inner.numel()
+    }
+
+    fn requires_grad(&self) -> bool {
+        self.inner.requires_grad()
+    }
+
+    fn is_leaf(&self) -> bool {
+        self.inner.is_leaf()
+    }
+
+    /// Return the tensor data as a flat Python list of f32s. For multi-dim
+    /// reads, inspect `.shape()` and reshape on the Python side (or use
+    /// `.to_numpy()`).
+    fn to_list(&self) -> Vec<f32> {
+        self.inner.tensor().to_vec_f32()
+    }
+
+    /// Return the tensor data as a numpy array reshaped to `.shape()`.
+    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<&'py numpy::PyArrayDyn<f32>> {
+        let tensor = self.inner.tensor();
+        let shape = tensor.shape().to_vec();
+        let data = tensor.to_vec_f32();
+        let arr = numpy::ndarray::Array::from_shape_vec(shape, data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(arr.to_pyarray(py))
+    }
+
+    /// Gradient tensor as a flat list, or None if backward hasn't produced one.
+    fn grad(&self) -> Option<Vec<f32>> {
+        self.inner.grad().map(|t| t.to_vec_f32())
+    }
+
+    /// Gradient tensor as a numpy array, or None.
+    fn grad_numpy<'py>(&self, py: Python<'py>) -> PyResult<Option<&'py numpy::PyArrayDyn<f32>>> {
+        match self.inner.grad() {
+            Some(t) => {
+                let shape = t.shape().to_vec();
+                let data = t.to_vec_f32();
+                let arr = numpy::ndarray::Array::from_shape_vec(shape, data)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                Ok(Some(arr.to_pyarray(py)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn zero_grad(&self) {
+        self.inner.zero_grad();
+    }
+
+    /// Run reverse-mode autodiff. Only callable on a scalar output.
+    fn backward(&self) -> PyResult<()> {
+        self.inner.backward().map_err(tensor_err)
+    }
+
+    // ---- Differentiable ops (subset matching autograd::Variable) ----
+
+    fn add(&self, other: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.add(&other.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn sub(&self, other: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.sub(&other.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn mul(&self, other: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.mul(&other.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn div(&self, other: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.div(&other.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn matmul(&self, other: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.matmul(&other.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn relu(&self) -> PyVariable {
+        PyVariable {
+            inner: self.inner.relu(),
+        }
+    }
+
+    fn sigmoid(&self) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.sigmoid().map_err(tensor_err)?,
+        })
+    }
+
+    fn tanh(&self) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.tanh_act().map_err(tensor_err)?,
+        })
+    }
+
+    fn gelu(&self) -> PyVariable {
+        PyVariable {
+            inner: self.inner.gelu(),
+        }
+    }
+
+    fn sum(&self) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.sum().map_err(tensor_err)?,
+        })
+    }
+
+    fn mean(&self) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.mean().map_err(tensor_err)?,
+        })
+    }
+
+    fn mul_scalar(&self, scalar: f32) -> PyVariable {
+        PyVariable {
+            inner: self.inner.mul_scalar(scalar),
+        }
+    }
+
+    fn t(&self) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.t().map_err(tensor_err)?,
+        })
+    }
+
+    fn reshape(&self, new_shape: Vec<usize>) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.reshape(&new_shape).map_err(tensor_err)?,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Variable(shape={:?}, requires_grad={}, is_leaf={})",
+            self.inner.shape(),
+            self.inner.requires_grad(),
+            self.inner.is_leaf()
+        )
+    }
+}
+
+/// Python wrapper for an nn::Parameter. Parameters are what optimizers
+/// consume; they are returned by `Linear.parameters()`.
+#[pyclass(name = "Parameter", unsendable)]
+#[derive(Clone)]
+struct PyParameter {
+    inner: RustParameter,
+}
+
+#[pymethods]
+impl PyParameter {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        self.inner.shape()
+    }
+
+    fn to_list(&self) -> Vec<f32> {
+        self.inner.tensor().to_vec_f32()
+    }
+
+    fn grad(&self) -> Option<Vec<f32>> {
+        self.inner.grad().map(|t| t.to_vec_f32())
+    }
+
+    fn zero_grad(&self) {
+        self.inner.zero_grad();
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Parameter('{}', shape={:?})", self.inner.name(), self.inner.shape())
+    }
+}
+
+/// Python wrapper for nn::Linear.
+#[pyclass(name = "Linear", unsendable)]
+struct PyLinear {
+    inner: RustLinear,
+}
+
+#[pymethods]
+impl PyLinear {
+    #[new]
+    #[pyo3(signature = (in_features, out_features, bias = true))]
+    fn new(in_features: usize, out_features: usize, bias: bool) -> Self {
+        let inner = if bias {
+            RustLinear::new(in_features, out_features)
+        } else {
+            RustLinear::no_bias(in_features, out_features)
+        };
+        PyLinear { inner }
+    }
+
+    fn forward(&self, input: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self.inner.forward(&input.inner).map_err(tensor_err)?,
+        })
+    }
+
+    fn parameters(&self) -> Vec<PyParameter> {
+        self.inner
+            .parameters()
+            .into_iter()
+            .map(|p| PyParameter { inner: p })
+            .collect()
+    }
+
+    fn in_features(&self) -> usize {
+        self.inner.in_features
+    }
+
+    fn out_features(&self) -> usize {
+        self.inner.out_features
+    }
+
+    fn __call__(&self, input: &PyVariable) -> PyResult<PyVariable> {
+        self.forward(input)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+/// Python wrapper for nn::MSELoss.
+#[pyclass(name = "MSELoss", unsendable)]
+struct PyMSELoss {
+    inner: RustMSELoss,
+}
+
+#[pymethods]
+impl PyMSELoss {
+    #[new]
+    fn new() -> Self {
+        PyMSELoss {
+            inner: RustMSELoss::new(),
+        }
+    }
+
+    fn forward(&self, pred: &PyVariable, target: &PyVariable) -> PyResult<PyVariable> {
+        Ok(PyVariable {
+            inner: self
+                .inner
+                .forward(&pred.inner, &target.inner)
+                .map_err(tensor_err)?,
+        })
+    }
+
+    fn __call__(&self, pred: &PyVariable, target: &PyVariable) -> PyResult<PyVariable> {
+        self.forward(pred, target)
+    }
+}
+
+/// Python wrapper for nn::SGD.
+#[pyclass(name = "SGD", unsendable)]
+struct PySGD {
+    inner: RustSGD,
+}
+
+#[pymethods]
+impl PySGD {
+    #[new]
+    fn new(params: Vec<PyParameter>, lr: f32) -> Self {
+        let rust_params: Vec<RustParameter> = params.into_iter().map(|p| p.inner).collect();
+        PySGD {
+            inner: RustSGD::new(rust_params, lr),
+        }
+    }
+
+    fn step(&mut self) -> PyResult<()> {
+        self.inner.step().map_err(tensor_err)
+    }
+
+    fn zero_grad(&self) {
+        self.inner.zero_grad();
+    }
+}
+
+/// Python wrapper for nn::Adam.
+#[pyclass(name = "Adam", unsendable)]
+struct PyAdam {
+    inner: RustAdam,
+}
+
+#[pymethods]
+impl PyAdam {
+    #[new]
+    fn new(params: Vec<PyParameter>, lr: f32) -> Self {
+        let rust_params: Vec<RustParameter> = params.into_iter().map(|p| p.inner).collect();
+        PyAdam {
+            inner: RustAdam::new(rust_params, lr),
+        }
+    }
+
+    fn step(&mut self) -> PyResult<()> {
+        self.inner.step().map_err(tensor_err)
+    }
+
+    fn zero_grad(&self) {
+        self.inner.zero_grad();
+    }
+}
+
 #[pymodule]
 fn rusttorch(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
+    m.add_class::<PyVariable>()?;
+    m.add_class::<PyParameter>()?;
+    m.add_class::<PyLinear>()?;
+    m.add_class::<PyMSELoss>()?;
+    m.add_class::<PySGD>()?;
+    m.add_class::<PyAdam>()?;
 
     // Element-wise operations
     m.add_function(wrap_pyfunction!(add, m)?)?;
