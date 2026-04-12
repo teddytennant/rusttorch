@@ -265,6 +265,19 @@ impl Variable {
         let s = self.sigmoid()?;
         self.mul(&s)
     }
+
+    /// GroupNorm over a 3-D `[N, C, L]` input. `num_groups` must divide
+    /// `C`. Optional `weight` and `bias` are per-channel affine parameters
+    /// of shape `[C]`.
+    pub fn group_norm(
+        &self,
+        num_groups: usize,
+        weight: Option<&Variable>,
+        bias: Option<&Variable>,
+        eps: f32,
+    ) -> Result<Variable> {
+        crate::autograd::ops::group_norm_forward(self, num_groups, weight, bias, eps)
+    }
 }
 
 impl fmt::Debug for Variable {

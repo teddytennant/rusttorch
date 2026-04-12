@@ -2189,6 +2189,253 @@ impl GradFn for LayerNormBackward {
     }
 }
 
+// ---- GroupNorm ----
+//
+// GroupNorm (Wu & He 2018) normalizes per-sample, per-group rather than
+// per-channel across the batch like BatchNorm. For input `[N, C, L]`
+// with `num_groups=G` and `K = C/G` channels per group, it splits
+// channels into G groups of K and normalizes each group's `K*L`
+// elements independently. Optional affine is a per-channel scale+shift.
+//
+// This op expects the input to be 3-D `[N, C, L]`. Callers with a 4-D
+// `[N, C, H, W]` input should reshape to `[N, C, H*W]` first.
+
+struct GroupNormBackward {
+    input: Variable,
+    weight: Option<Variable>,
+    bias: Option<Variable>,
+    x_hat: Tensor,       // shape = input shape
+    inv_std: Tensor,     // shape = [N, G]
+    num_groups: usize,
+    channels_per_group: usize,
+    spatial: usize,
+}
+
+impl GradFn for GroupNormBackward {
+    fn backward(&self, grad_output: &Tensor) -> Result<Vec<Option<Tensor>>> {
+        let go = grad_output.to_vec_f32();
+        let shape = grad_output.shape();
+        let x_hat = self.x_hat.to_vec_f32();
+        let inv_std = self.inv_std.to_vec_f32();
+
+        let num_groups = self.num_groups;
+        let k = self.channels_per_group;
+        let l = self.spatial;
+        let total_channels = num_groups * k;
+        let m = k * l; // elements per group
+        let m_f = m as f32;
+        let num_samples = go.len() / (total_channels * l);
+
+        // Helper to index a flat element at [n, c, s]
+        let idx = |n: usize, c: usize, s: usize| n * total_channels * l + c * l + s;
+
+        // grad_weight[c] = Σ_{n,s} grad_output[n,c,s] * x_hat[n,c,s]
+        let grad_weight = if self.weight.as_ref().is_some_and(|w| w.requires_grad()) {
+            let mut gw = vec![0.0f32; total_channels];
+            for n in 0..num_samples {
+                for (c, gw_slot) in gw.iter_mut().enumerate() {
+                    for s in 0..l {
+                        let i = idx(n, c, s);
+                        *gw_slot += go[i] * x_hat[i];
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gw, &[total_channels]))
+        } else {
+            None
+        };
+
+        // grad_bias[c] = Σ_{n,s} grad_output[n,c,s]
+        let grad_bias = if self.bias.as_ref().is_some_and(|b| b.requires_grad()) {
+            let mut gb = vec![0.0f32; total_channels];
+            for n in 0..num_samples {
+                for (c, gb_slot) in gb.iter_mut().enumerate() {
+                    for s in 0..l {
+                        *gb_slot += go[idx(n, c, s)];
+                    }
+                }
+            }
+            Some(Tensor::from_vec(gb, &[total_channels]))
+        } else {
+            None
+        };
+
+        let grad_input = if self.input.requires_grad() {
+            let weight_data = self.weight.as_ref().map(|w| w.tensor().to_vec_f32());
+            let mut dx = vec![0.0f32; go.len()];
+
+            for n in 0..num_samples {
+                for g in 0..num_groups {
+                    let inv_s = inv_std[n * num_groups + g];
+
+                    // Compute sum1 and sum2 over this group.
+                    let mut sum1 = 0.0f32;
+                    let mut sum2 = 0.0f32;
+                    for kk in 0..k {
+                        let c = g * k + kk;
+                        let w = weight_data.as_ref().map(|w| w[c]).unwrap_or(1.0);
+                        for s in 0..l {
+                            let i = idx(n, c, s);
+                            let gs = go[i] * w;
+                            sum1 += gs;
+                            sum2 += gs * x_hat[i];
+                        }
+                    }
+
+                    let scale = inv_s / m_f;
+                    for kk in 0..k {
+                        let c = g * k + kk;
+                        let w = weight_data.as_ref().map(|w| w[c]).unwrap_or(1.0);
+                        for s in 0..l {
+                            let i = idx(n, c, s);
+                            let gs = go[i] * w;
+                            dx[i] = scale * (m_f * gs - sum1 - x_hat[i] * sum2);
+                        }
+                    }
+                }
+            }
+
+            Some(Tensor::from_vec(dx, shape))
+        } else {
+            None
+        };
+
+        let mut grads = vec![grad_input];
+        if self.weight.is_some() {
+            grads.push(grad_weight);
+        }
+        if self.bias.is_some() {
+            grads.push(grad_bias);
+        }
+        Ok(grads)
+    }
+
+    fn inputs(&self) -> Vec<Variable> {
+        let mut inputs = vec![self.input.clone()];
+        if let Some(ref w) = self.weight {
+            inputs.push(w.clone());
+        }
+        if let Some(ref b) = self.bias {
+            inputs.push(b.clone());
+        }
+        inputs
+    }
+}
+
+/// GroupNorm forward pass.
+///
+/// Input must be 3-D `[N, C, L]`. `num_groups` must divide `C`. Optional
+/// `weight` and `bias` are `[C]`-shaped per-channel affine parameters.
+pub fn group_norm_forward(
+    input: &Variable,
+    num_groups: usize,
+    weight: Option<&Variable>,
+    bias: Option<&Variable>,
+    eps: f32,
+) -> Result<Variable> {
+    let tensor = input.tensor();
+    let shape = tensor.shape().to_vec();
+    if shape.len() != 3 {
+        return Err(TensorError::InvalidArgument {
+            parameter: "input".to_string(),
+            reason: format!(
+                "group_norm expects a 3-D [N, C, L] input, got shape {:?}",
+                shape
+            ),
+        });
+    }
+    let (n, c, l) = (shape[0], shape[1], shape[2]);
+    if num_groups == 0 || !c.is_multiple_of(num_groups) {
+        return Err(TensorError::InvalidArgument {
+            parameter: "num_groups".to_string(),
+            reason: format!(
+                "num_groups {} must divide channels {}",
+                num_groups, c
+            ),
+        });
+    }
+    let k = c / num_groups;
+    let m = k * l; // elements per group
+    let m_f = m as f32;
+
+    let data = tensor.to_vec_f32();
+    let mut output = vec![0.0f32; data.len()];
+    let mut x_hat = vec![0.0f32; data.len()];
+    let mut inv_std = vec![0.0f32; n * num_groups];
+
+    let weight_data = weight.map(|w| w.tensor().to_vec_f32());
+    let bias_data = bias.map(|b| b.tensor().to_vec_f32());
+
+    let idx = |nn: usize, cc: usize, ss: usize| nn * c * l + cc * l + ss;
+
+    for nn in 0..n {
+        for g in 0..num_groups {
+            // Compute mean over group.
+            let mut mean = 0.0f32;
+            for kk in 0..k {
+                let cc = g * k + kk;
+                for ss in 0..l {
+                    mean += data[idx(nn, cc, ss)];
+                }
+            }
+            mean /= m_f;
+
+            // Compute variance over group.
+            let mut var = 0.0f32;
+            for kk in 0..k {
+                let cc = g * k + kk;
+                for ss in 0..l {
+                    let d = data[idx(nn, cc, ss)] - mean;
+                    var += d * d;
+                }
+            }
+            var /= m_f;
+
+            let inv_s = 1.0 / (var + eps).sqrt();
+            inv_std[nn * num_groups + g] = inv_s;
+
+            // Normalize and apply per-channel affine.
+            for kk in 0..k {
+                let cc = g * k + kk;
+                let w = weight_data.as_ref().map(|w| w[cc]).unwrap_or(1.0);
+                let b = bias_data.as_ref().map(|b| b[cc]).unwrap_or(0.0);
+                for ss in 0..l {
+                    let i = idx(nn, cc, ss);
+                    let normalized = (data[i] - mean) * inv_s;
+                    x_hat[i] = normalized;
+                    output[i] = normalized * w + b;
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(output, &shape);
+    let x_hat_tensor = Tensor::from_vec(x_hat, &shape);
+    let inv_std_tensor = Tensor::from_vec(inv_std, &[n, num_groups]);
+
+    let needs_grad = input.requires_grad()
+        || weight.is_some_and(|w| w.requires_grad())
+        || bias.is_some_and(|b| b.requires_grad());
+
+    if needs_grad {
+        Ok(Variable::from_op(
+            result,
+            Box::new(GroupNormBackward {
+                input: input.clone(),
+                weight: weight.cloned(),
+                bias: bias.cloned(),
+                x_hat: x_hat_tensor,
+                inv_std: inv_std_tensor,
+                num_groups,
+                channels_per_group: k,
+                spatial: l,
+            }),
+        ))
+    } else {
+        Ok(Variable::detach(result))
+    }
+}
+
 // ---- RMSNorm ----
 //
 // RMSNorm (Zhang & Sennrich, "Root Mean Square Layer Normalization", 2019;

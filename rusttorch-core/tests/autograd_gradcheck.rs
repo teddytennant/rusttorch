@@ -433,6 +433,59 @@ fn gradcheck_rms_norm_wrt_weight() {
     }
 }
 
+// ---- GroupNorm ----
+
+#[test]
+fn gradcheck_group_norm_wrt_input() {
+    // Small [1, 4, 2] input, num_groups=2, no affine → plain per-group normalization.
+    let x_vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, -1.0, 0.0, 1.5, -0.5];
+    let shape = [1, 4, 2];
+    let eps = 1e-5_f32;
+
+    let x = Variable::new(Tensor::from_vec(x_vals.clone(), &shape), true);
+    let loss = x.group_norm(2, None, None, eps).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+    let gx = x.grad().unwrap().to_vec_f32();
+
+    // Reference: sum(group_norm(x)) with 2 groups of 2 channels × 2 spatial.
+    let ref_sum = |xv: &[f32]| -> f32 {
+        let mut out = vec![0.0f32; xv.len()];
+        let c = 4;
+        let l = 2;
+        let num_groups = 2;
+        let k = c / num_groups;
+        let m = (k * l) as f32;
+        for g in 0..num_groups {
+            // Collect M elements
+            let mut buf = Vec::with_capacity(k * l);
+            for kk in 0..k {
+                let cc = g * k + kk;
+                for s in 0..l {
+                    buf.push(xv[cc * l + s]);
+                }
+            }
+            let mean = buf.iter().sum::<f32>() / m;
+            let var = buf.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / m;
+            let inv_s = 1.0 / (var + eps).sqrt();
+            for kk in 0..k {
+                let cc = g * k + kk;
+                for s in 0..l {
+                    out[cc * l + s] = (xv[cc * l + s] - mean) * inv_s;
+                }
+            }
+        }
+        out.iter().sum()
+    };
+    let num_gx = numerical_grad(&x_vals, ref_sum);
+    // GroupNorm backward is numerically sensitive; use a slightly relaxed tol.
+    for (i, (&a, &n)) in gx.iter().zip(num_gx.iter()).enumerate() {
+        assert!(
+            (a - n).abs() < 5e-3,
+            "group_norm grad[{i}]: analytical={a}, numerical={n}"
+        );
+    }
+}
+
 // ---- Composite ----
 
 #[test]
