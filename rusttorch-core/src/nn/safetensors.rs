@@ -943,13 +943,13 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
         data.extend_from_slice(header_bytes);
-        data.extend_from_slice(&3.14f64.to_le_bytes());
-        data.extend_from_slice(&2.71f64.to_le_bytes());
+        data.extend_from_slice(&1.25f64.to_le_bytes());
+        data.extend_from_slice(&(-4.5f64).to_le_bytes());
 
         let sd = load_safetensors_from_bytes(&data).unwrap();
         let vals = sd.get("x").unwrap().to_vec_f32();
-        assert!((vals[0] - 3.14).abs() < 1e-3);
-        assert!((vals[1] - 2.71).abs() < 1e-3);
+        assert!((vals[0] - 1.25).abs() < 1e-3);
+        assert!((vals[1] - (-4.5)).abs() < 1e-3);
     }
 
     #[test]

@@ -2590,10 +2590,11 @@ fn test_resnet18_train_eval_mode() {
         .zip(eval_data.iter())
         .map(|(a, b)| (a - b).abs())
         .sum();
-    // They should be different (not exactly equal)
+    // BatchNorm in train mode uses batch stats; in eval mode it uses running stats
+    // (initialized to mean=0, var=1). With non-zero input these differ.
     assert!(
-        diff > 0.0 || true, // Allow equal in edge case of zero input
-        "Train and eval modes should generally produce different outputs"
+        diff > 0.0,
+        "Train and eval modes should produce different outputs (diff={diff})"
     );
 }
 
@@ -3103,12 +3104,9 @@ fn test_embedding_backward() {
     // Indices 2-4 unused → zero gradient
     let dim = 3;
     for i in 0..dim {
+        assert!((grad[i] - 2.0).abs() < 1e-5, "idx 0 grad should be 2.0");
         assert!(
-            (grad[0 * dim + i] - 2.0).abs() < 1e-5,
-            "idx 0 grad should be 2.0"
-        );
-        assert!(
-            (grad[1 * dim + i] - 1.0).abs() < 1e-5,
+            (grad[dim + i] - 1.0).abs() < 1e-5,
             "idx 1 grad should be 1.0"
         );
         assert!((grad[2 * dim + i]).abs() < 1e-5, "idx 2 grad should be 0");

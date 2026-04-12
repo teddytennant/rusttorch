@@ -34,14 +34,14 @@ fn bench_forward_backward(label: &str, conv: &Conv2d, input: &Variable, iteratio
     for _ in 0..3 {
         let out = conv.forward(input).unwrap();
         let loss = out.sum().unwrap();
-        loss.backward();
+        loss.backward().unwrap();
     }
 
     let start = Instant::now();
     for _ in 0..iterations {
         let out = conv.forward(input).unwrap();
         let loss = out.sum().unwrap();
-        loss.backward();
+        loss.backward().unwrap();
     }
     let elapsed = start.elapsed();
     let per_iter = elapsed / iterations as u32;
