@@ -329,4 +329,98 @@ mod tests {
         };
         assert!(!non_contiguous.is_contiguous());
     }
+
+    #[test]
+    fn test_view_dtype_roundtrip() {
+        let data = [1.0_f32, 2.0];
+        let view = unsafe {
+            TensorView::from_raw_parts(
+                data.as_ptr(),
+                2,
+                vec![2],
+                vec![1],
+                DType::Float32,
+            )
+        };
+        assert_eq!(view.dtype(), DType::Float32);
+    }
+
+    #[test]
+    fn test_view_strides_accessor() {
+        let data = [0.0_f32; 24];
+        let view = unsafe {
+            TensorView::from_raw_parts(
+                data.as_ptr(),
+                24,
+                vec![2, 3, 4],
+                vec![12, 4, 1],
+                DType::Float32,
+            )
+        };
+        assert_eq!(view.strides(), &[12, 4, 1]);
+    }
+
+    #[test]
+    fn test_view_wrong_rank_get_returns_none() {
+        let data = [1.0_f32, 2.0, 3.0, 4.0];
+        let view = unsafe {
+            TensorView::from_raw_parts(data.as_ptr(), 4, vec![2, 2], vec![2, 1], DType::Float32)
+        };
+        // Asking for a 3D index on a 2D view should return None, not panic.
+        assert_eq!(view.get(&[0, 0, 0]), None);
+        assert_eq!(view.get(&[0]), None);
+    }
+
+    #[test]
+    fn test_view_scalar_zero_dim_is_contiguous() {
+        let data = [42.0_f32];
+        let view = unsafe {
+            TensorView::from_raw_parts(data.as_ptr(), 1, Vec::new(), Vec::new(), DType::Float32)
+        };
+        assert_eq!(view.ndim(), 0);
+        assert_eq!(view.numel(), 1);
+        assert!(view.is_contiguous());
+    }
+
+    #[test]
+    fn test_mutable_view_as_slice_read() {
+        let mut data = [5.0_f32, 6.0, 7.0, 8.0];
+        let view = unsafe {
+            TensorViewMut::from_raw_parts_mut(
+                data.as_mut_ptr(),
+                4,
+                vec![4],
+                vec![1],
+                DType::Float32,
+            )
+        };
+        assert_eq!(view.as_slice(), &[5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(view.numel(), 4);
+        assert_eq!(view.ndim(), 1);
+        assert_eq!(view.dtype(), DType::Float32);
+        assert_eq!(view.shape(), &[4]);
+        assert_eq!(view.strides(), &[1]);
+        assert!(view.is_contiguous());
+    }
+
+    #[test]
+    fn test_view_get_valid_and_oob_index() {
+        let data = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let view = unsafe {
+            TensorView::from_raw_parts(data.as_ptr(), 6, vec![2, 3], vec![3, 1], DType::Float32)
+        };
+        assert_eq!(view.get(&[0, 0]), Some(&1.0));
+        assert_eq!(view.get(&[1, 2]), Some(&6.0));
+        // Out-of-bounds along either axis returns None.
+        assert_eq!(view.get(&[2, 0]), None);
+        assert_eq!(view.get(&[0, 3]), None);
+    }
+
+    #[test]
+    fn test_view_is_send_sync_marker() {
+        // Compile-time check that TensorView<'_, f32> is Send + Sync.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TensorView<'_, f32>>();
+        assert_send_sync::<TensorViewMut<'_, f32>>();
+    }
 }

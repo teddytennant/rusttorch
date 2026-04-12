@@ -1,0 +1,297 @@
+//! Finite-difference gradcheck for autograd primitives.
+//!
+//! For each differentiable op, we compare the analytical gradient computed by
+//! `backward()` with a centered finite-difference approximation
+//!   f'(x_i) ≈ (f(x + eps*e_i) - f(x - eps*e_i)) / (2 * eps).
+//!
+//! Running this from `tests/` (an integration test binary) also exercises the
+//! crate's public API surface the way downstream users see it.
+
+use rusttorch_core::autograd::Variable;
+use rusttorch_core::tensor::Tensor;
+
+const EPS: f32 = 1e-3;
+const TOL: f32 = 1e-2;
+
+/// Numerical gradient of a scalar-valued function `f: Vec<f32> -> f32`.
+fn numerical_grad<F>(x: &[f32], mut f: F) -> Vec<f32>
+where
+    F: FnMut(&[f32]) -> f32,
+{
+    let mut grad = vec![0.0_f32; x.len()];
+    let mut xp = x.to_vec();
+    let mut xm = x.to_vec();
+    for i in 0..x.len() {
+        xp.copy_from_slice(x);
+        xm.copy_from_slice(x);
+        xp[i] += EPS;
+        xm[i] -= EPS;
+        grad[i] = (f(&xp) - f(&xm)) / (2.0 * EPS);
+    }
+    grad
+}
+
+fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+    (a - b).abs() <= tol + tol * b.abs().max(a.abs())
+}
+
+fn assert_grads_close(analytical: &[f32], numerical: &[f32], op: &str) {
+    assert_eq!(
+        analytical.len(),
+        numerical.len(),
+        "{op}: length mismatch"
+    );
+    for (i, (&a, &n)) in analytical.iter().zip(numerical.iter()).enumerate() {
+        assert!(
+            approx_eq(a, n, TOL),
+            "{op}: grad[{i}] mismatch — analytical={a}, numerical={n}"
+        );
+    }
+}
+
+// ---- Elementwise ops ----
+
+#[test]
+fn gradcheck_add() {
+    let x_vals = [1.0_f32, -2.0, 3.0, 0.5];
+    let y_vals = [0.5_f32, 1.5, -1.0, 2.0];
+    let shape = [4];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let y = Variable::new(Tensor::from_vec(y_vals.to_vec(), &shape), true);
+    let loss = x.add(&y).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter().zip(y_vals.iter()).map(|(a, b)| a + b).sum()
+    });
+    assert_grads_close(&gx, &num_gx, "add");
+}
+
+#[test]
+fn gradcheck_mul() {
+    let x_vals = [1.0_f32, -2.0, 3.0, 0.5];
+    let y_vals = [0.5_f32, 1.5, -1.0, 2.0];
+    let shape = [4];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let y = Variable::new(Tensor::from_vec(y_vals.to_vec(), &shape), true);
+    let loss = x.mul(&y).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter().zip(y_vals.iter()).map(|(a, b)| a * b).sum()
+    });
+    assert_grads_close(&gx, &num_gx, "mul");
+}
+
+#[test]
+fn gradcheck_sub() {
+    let x_vals = [3.0_f32, -1.0, 2.5];
+    let y_vals = [1.0_f32, 1.0, 0.5];
+    let shape = [3];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let y = Variable::new(Tensor::from_vec(y_vals.to_vec(), &shape), true);
+    let loss = x.sub(&y).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter().zip(y_vals.iter()).map(|(a, b)| a - b).sum()
+    });
+    assert_grads_close(&gx, &num_gx, "sub");
+}
+
+#[test]
+fn gradcheck_div() {
+    let x_vals = [2.0_f32, 4.0, 6.0];
+    let y_vals = [1.0_f32, 2.0, 3.0];
+    let shape = [3];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let y = Variable::new(Tensor::from_vec(y_vals.to_vec(), &shape), true);
+    let loss = x.div(&y).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter().zip(y_vals.iter()).map(|(a, b)| a / b).sum()
+    });
+    assert_grads_close(&gx, &num_gx, "div");
+}
+
+// ---- Activations ----
+
+#[test]
+fn gradcheck_relu() {
+    // Avoid testing at exactly zero (non-differentiable kink).
+    let x_vals = [-2.0_f32, -0.5, 0.7, 1.3, 3.0];
+    let shape = [5];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.relu().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| xv.iter().map(|v| v.max(0.0)).sum());
+    assert_grads_close(&gx, &num_gx, "relu");
+}
+
+#[test]
+fn gradcheck_sigmoid() {
+    let x_vals = [-1.5_f32, -0.3, 0.0, 0.4, 2.0];
+    let shape = [5];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.sigmoid().unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter().map(|v| 1.0 / (1.0 + (-v).exp())).sum()
+    });
+    assert_grads_close(&gx, &num_gx, "sigmoid");
+}
+
+#[test]
+fn gradcheck_tanh() {
+    let x_vals = [-1.0_f32, -0.25, 0.0, 0.5, 1.5];
+    let shape = [5];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.tanh_act().unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| xv.iter().map(|v| v.tanh()).sum());
+    assert_grads_close(&gx, &num_gx, "tanh");
+}
+
+#[test]
+fn gradcheck_gelu() {
+    // GELU is smooth, so gradcheck is meaningful everywhere.
+    let x_vals = [-2.0_f32, -0.5, 0.0, 0.7, 2.0];
+    let shape = [5];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.gelu().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+
+    // Reference (tanh-based GELU approximation, matching rusttorch's impl).
+    let gelu = |v: f32| -> f32 {
+        let c = (2.0_f32 / std::f32::consts::PI).sqrt();
+        0.5 * v * (1.0 + (c * (v + 0.044715 * v * v * v)).tanh())
+    };
+    let num_gx = numerical_grad(&x_vals, |xv| xv.iter().map(|&v| gelu(v)).sum());
+
+    // GELU's finite-difference estimate is noisier — relax tolerance slightly.
+    for (i, (&a, &n)) in gx.iter().zip(num_gx.iter()).enumerate() {
+        assert!(
+            (a - n).abs() < 5e-2,
+            "gelu: grad[{i}] analytical={a}, numerical={n}"
+        );
+    }
+}
+
+// ---- Reductions ----
+
+#[test]
+fn gradcheck_sum() {
+    let x_vals = [1.0_f32, 2.0, 3.0, 4.0];
+    let shape = [4];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    // d(sum(x))/dx_i = 1 for all i.
+    for (i, &g) in gx.iter().enumerate() {
+        assert!(
+            (g - 1.0).abs() < 1e-6,
+            "sum: grad[{i}] should be 1, got {g}"
+        );
+    }
+}
+
+#[test]
+fn gradcheck_mean() {
+    let x_vals = [1.0_f32, 2.0, 3.0, 4.0, 5.0];
+    let shape = [5];
+    let n = x_vals.len() as f32;
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let loss = x.mean().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    for (i, &g) in gx.iter().enumerate() {
+        assert!(
+            (g - 1.0 / n).abs() < 1e-6,
+            "mean: grad[{i}] should be 1/n, got {g}"
+        );
+    }
+}
+
+// ---- Matrix ops ----
+
+#[test]
+fn gradcheck_matmul_wrt_x() {
+    // x: [2, 3], y: [3, 2]; loss = sum(x @ y)
+    let x_vals = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let y_vals = [0.5_f32, -1.0, 2.0, 1.5, -0.5, 1.0];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &[2, 3]), true);
+    let y = Variable::new(Tensor::from_vec(y_vals.to_vec(), &[3, 2]), true);
+    let loss = x.matmul(&y).unwrap().sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        // Compute sum(xv @ y_vals) where xv is [2, 3] and y_vals is [3, 2]
+        let mut total = 0.0;
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut acc = 0.0;
+                for k in 0..3 {
+                    acc += xv[i * 3 + k] * y_vals[k * 2 + j];
+                }
+                total += acc;
+            }
+        }
+        total
+    });
+    assert_grads_close(&gx, &num_gx, "matmul_wrt_x");
+}
+
+// ---- Composite ----
+
+#[test]
+fn gradcheck_mse_like_loss() {
+    // loss = sum((x - t) * (x - t))
+    let x_vals = [0.5_f32, -0.8, 1.2, 2.3];
+    let t_vals = [0.0_f32, 0.0, 1.0, 2.0];
+    let shape = [4];
+
+    let x = Variable::new(Tensor::from_vec(x_vals.to_vec(), &shape), true);
+    let t = Variable::new(Tensor::from_vec(t_vals.to_vec(), &shape), false);
+    let diff = x.sub(&t).unwrap();
+    let sq = diff.mul(&diff).unwrap();
+    let loss = sq.sum().unwrap();
+    loss.backward().unwrap();
+
+    let gx = x.grad().unwrap().to_vec_f32();
+    let num_gx = numerical_grad(&x_vals, |xv| {
+        xv.iter()
+            .zip(t_vals.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum()
+    });
+    assert_grads_close(&gx, &num_gx, "mse_like_loss");
+}
