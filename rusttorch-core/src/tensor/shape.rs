@@ -53,6 +53,7 @@ pub fn broadcast_shapes(shape1: &[usize], shape2: &[usize]) -> Option<Vec<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // ---- compute_strides ----
 
@@ -180,5 +181,48 @@ mod tests {
         let a = [2, 1, 5];
         let b = [3, 5];
         assert_eq!(broadcast_shapes(&a, &b), broadcast_shapes(&b, &a));
+    }
+
+    // ---- Property-based tests (fulfills RUSTTORCH_TODO Track B) ----
+    proptest! {
+        /// Strides for row-major: last stride is always 1; prefix product matches numel.
+        #[test]
+        fn prop_compute_strides_last_is_one_and_prefix_product(shape in prop::collection::vec(1usize..64, 1..5)) {
+            let strides = compute_strides(&shape);
+            prop_assert_eq!(*strides.last().unwrap(), 1);
+            let n = numel(&shape);
+            if !shape.is_empty() {
+                prop_assert_eq!(strides[0] * shape[0], n);
+            }
+        }
+
+        /// Broadcast is symmetric when valid: broadcast(a, b) == broadcast(b, a).
+        #[test]
+        fn prop_broadcast_symmetric(
+            a in prop::collection::vec(1usize..32, 0..4),
+            b in prop::collection::vec(1usize..32, 0..4)
+        ) {
+            let r1 = broadcast_shapes(&a, &b);
+            let r2 = broadcast_shapes(&b, &a);
+            prop_assert_eq!(r1, r2);
+        }
+
+        /// Valid broadcast result has max rank and each dim is max or the non-1 value.
+        #[test]
+        fn prop_broadcast_result_dims_valid(
+            a in prop::collection::vec(1usize..16, 1..4),
+            b in prop::collection::vec(1usize..16, 1..4)
+        ) {
+            if let Some(r) = broadcast_shapes(&a, &b) {
+                prop_assert!(r.len() <= a.len().max(b.len()));
+                // Spot check: every dim in r is >= corresponding in a/b (or 1-padded)
+                for (i, &rd) in r.iter().rev().enumerate() {
+                    let da = if i < a.len() { a[a.len()-1-i] } else { 1 };
+                    let db = if i < b.len() { b[b.len()-1-i] } else { 1 };
+                    let expected = da.max(db);
+                    prop_assert_eq!(rd, expected);
+                }
+            }
+        }
     }
 }
