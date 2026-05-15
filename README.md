@@ -61,16 +61,11 @@ rusttorch/
 - **Adam**: Standard Adam and AdamW (with weight decay)
 
 ### In Development 🚧
-- **Data Loading**: CSV parsing, data preprocessing, batching
-- **Broadcasting**: Automatic shape broadcasting for element-wise ops
-- **SIMD**: Explicit vectorization for numerical ops
-- **GPU Support**: CUDA/wgpu backends
+- **GPU Support**: CUDA backend (on `gpu-device-abstraction` branch; main is CPU-only)
+- **Polish**: CI, more Python wrappers, property tests, full BumpArena integration, vmap/grad functional API (blocked on slice/concat)
 
-### Not Included (Initial Phase)
-- Autograd engine (too complex, core to PyTorch)
-- CUDA kernels (CPU focus first)
-- Neural network layers (depend on autograd)
-- Distributed training (complex coordination)
+### Current Scope
+Full autograd, 20+ nn modules (Conv, norms, attention, Transformer, ResNet, GPT2), optimizers, data loaders, broadcasting (explicit), batched matmul. CPU-only on main; GPU work on side branch. Experimental — not a PyTorch drop-in.
 
 ## Technology Stack
 
@@ -87,44 +82,11 @@ Target operations aim for:
 - **Zero** memory leaks or data races
 - **100%** API compatibility for implemented operations
 
-## Development Phases
+## Status
 
-### Phase 1: Foundation (Completed)
-- [x] Project structure and planning
-- [x] Core tensor types
-- [x] Basic memory management
-- [x] Initial Python bindings
+Core complete: tensors, elementwise+parallel+SIMD-named, reductions, matmul (batched), 13 activations, 5 losses, SGD/Adam, full autograd (Variable), 20+ nn modules (Linear/Conv/Transformer/ResNet/GPT2/etc), data loaders, safetensors, memory arena (Bump), Python bindings for training loop.
 
-### Phase 2: Core Operations (Completed)
-- [x] Element-wise operations (add, mul, sub, div, scalars)
-- [x] Reduction operations (sum, mean, max, min, dim-specific)
-- [x] Activation functions (ReLU, Sigmoid, Tanh, GELU, Softmax, Leaky ReLU)
-- [x] Unit tests (100+ tests with edge cases)
-
-### Phase 3: Integration (Completed)
-- [x] Python API mirroring PyTorch
-- [x] Performance benchmark infrastructure (scripts ready)
-- [x] Comprehensive documentation (PERFORMANCE.md)
-- [x] Automated benchmark runner
-- [ ] CI/CD
-
-### Phase 4: Matrix Operations (Completed)
-- [x] Matrix multiplication (matmul)
-- [x] Transpose operations
-- [x] Reshape operations
-- [x] Comprehensive tests
-- [x] Benchmark integration
-
-### Phase 5: Optimization & Advanced Features (In Progress)
-- [x] Loss functions (MSE, L1, Cross-Entropy, etc.)
-- [x] Optimizer update rules (SGD, Adam, AdamW)
-- [x] Additional activation functions (ELU, SELU, Swish, Mish, etc.)
-- [x] Rayon parallel execution for large tensors
-- [x] Comprehensive Python bindings
-- [ ] SIMD vectorization
-- [ ] Broadcasting support
-- [ ] Batched matrix operations (3D+)
-- [ ] GPU support (wgpu/CUDA)
+**Experimental** — use for research or as reference. See RUSTTORCH_TODO.md for remaining (GPU, more py bindings, CI, property tests, vmap). 668+ tests pass, clippy -D warnings clean.
 
 ## Testing Strategy
 
@@ -135,15 +97,9 @@ Target operations aim for:
 
 ## Installation
 
-### Quick Install (PyPI - Coming Soon)
+### Install from Source
 
-```bash
-# First install PyTorch (if not already installed)
-pip install torch
-
-# Then install RustTorch extension
-pip install rusttorch
-```
+See [INSTALL.md](INSTALL.md). PyPI package not yet published.
 
 ### Install from Source
 
@@ -238,53 +194,7 @@ This project follows PyTorch's BSD-style license. See original [PyTorch LICENSE]
 
 ## Status
 
-**Current Status**: ✅ CORE FEATURES COMPLETE - Alpha Testing Phase
-
-RustTorch is a **high-performance neural network toolkit** with:
-
-### Tensor Operations (19 functions)
-- Tensor creation and management (zeros, ones, from_vec)
-- Element-wise operations (add, mul, sub, div + scalars) with Rayon parallelization
-- Broadcasting support (add_broadcast, mul_broadcast, etc.) - PyTorch compatible!
-- SIMD-optimized operations (add_simd, mul_simd, relu_simd, fused_multiply_add)
-- Reduction operations (sum, mean, max, min + dimension-specific)
-- Matrix operations (matmul, transpose, reshape)
-
-### Neural Network Components (22 functions)
-- **13 activation functions**: ReLU, Leaky ReLU, ELU, SELU, Sigmoid, Tanh, GELU, Swish, Mish, Softmax, Softplus, Softsign
-- **5 loss functions**: MSE, L1, Smooth L1, Binary Cross-Entropy, Cross-Entropy
-- **4 optimizer update rules**: SGD, SGD+Momentum, Adam, AdamW
-
-### Data Loading & Preprocessing (6 functions)
-- CSV loading with header support
-- Z-score normalization
-- Batch creation (with drop_last option)
-- Index shuffling for random sampling
-- Train/val/test splitting
-
-### Performance Features
-- **Rayon parallelization** - Automatic multi-core execution (tensors >= 10k elements)
-- **SIMD vectorization** - Auto-vectorization + manual SIMD operations
-- **Broadcasting** - NumPy/PyTorch compatible shape expansion
-- **Memory efficiency** - Arc-based reference counting
-
-### Infrastructure
-- **Python bindings via PyO3** - 55+ functions exposed
-- **200+ comprehensive unit tests** - 100% API coverage
-- **Complete benchmark infrastructure** - Ready for performance testing
-- **Extensive documentation** - Quick start, API docs, implementation guides
-
-### Performance Targets (vs PyTorch CPU)
-- Element-wise ops: **1.5-2x faster** (parallel + SIMD)
-- Activations: **1.2-1.8x faster** (SIMD optimized)
-- Optimizers: **1.3x faster** (efficient updates)
-- Matrix ops: **Competitive** (using ndarray BLAS)
-
-**Total**: 55+ functions across 8 categories
-
----
-
-This project successfully demonstrates that **Rust is production-ready for high-performance numerical computing** and provides PyTorch-compatible operations with additional compile-time safety guarantees.
+**Experimental research project**. Full autograd + 20+ nn + training + GPT2 implemented and tested (668+ tests). Not a PyTorch replacement or drop-in. See RUSTTORCH_TODO.md for open items (GPU branch, py wrappers, CI, property tests). Older perf claims aspirational.
 
 ## Original PyTorch
 

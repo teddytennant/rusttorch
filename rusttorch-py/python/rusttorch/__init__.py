@@ -1,8 +1,8 @@
 """
-RustTorch - High-performance PyTorch operations in Rust
+RustTorch - High-performance tensor/nn/autograd in Rust
 
-This package provides drop-in replacements for performance-critical
-PyTorch operations, implemented in Rust for improved safety and speed.
+PyTorch-like API (own Tensor/Variable types). Experimental standalone lib.
+See tests for autograd training examples. Not a torch drop-in.
 """
 
 from .rusttorch import (

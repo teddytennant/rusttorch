@@ -25,7 +25,7 @@ Thank you for your interest in contributing to RustTorch! This document provides
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rusttorch.git
+git clone https://github.com/teddytennant/rusttorch.git
 cd rusttorch
 
 # Build Rust core library
@@ -96,7 +96,7 @@ python compare_pytorch.py
 
 ## Questions?
 
-- **Documentation**: See [README.md](README.md) and [RUSTTORCH_PLAN.md](RUSTTORCH_PLAN.md)
+- **Documentation**: See [README.md](README.md), [RUSTTORCH_TODO.md](RUSTTORCH_TODO.md) and [PYTORCH_PORT.md](PYTORCH_PORT.md)
 - **Issues**: Open an issue on GitHub
 - **Discussions**: Start a discussion in GitHub Discussions
 

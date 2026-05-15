@@ -256,8 +256,7 @@ for epoch in range(epochs):
         # Compute loss
         loss = rt.cross_entropy_loss(probs, targets, epsilon=1e-7)
 
-        # Compute gradients (manual - no autograd yet)
-        grad_w, grad_b = compute_gradients()  # Your backward pass
+        # Low-level path (manual grads). For autograd use Variable + Linear + .backward() (see python/tests/test_autograd_smoke.py)
 
         # Update weights with Adam
         weights, m_w, v_w = rt.adam_update(
@@ -298,7 +297,6 @@ x = rt.Tensor.ones([1000, 1000])
 y = x  # Cheap clone via Arc
 
 # But operations create new tensors
-# TODO: In-place operations coming in future release
 ```
 
 ## Troubleshooting
@@ -312,7 +310,7 @@ maturin develop --release
 
 ### Shape Mismatch Errors
 ```python
-# Element-wise ops require same shape (no broadcasting yet)
+# Element-wise ops require same shape (use *_broadcast fns or autograd for broadcast)
 a = rt.Tensor.ones([2, 3])
 b = rt.Tensor.ones([2, 3])  # ✅ Same shape
 c = rt.Tensor.ones([3, 2])  # ❌ Different shape
@@ -337,21 +335,21 @@ y = rt.div(x_int, x_int)      # ❌ Panic: division requires floats
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Tensor creation | ✅ | zeros, ones, from_vec |
-| Element-wise ops | ✅ | add, sub, mul, div, scalars |
-| Matrix ops | ✅ | matmul, transpose, reshape |
-| Activations | ✅ | 13 functions |
-| Loss functions | ✅ | 5 functions |
-| Optimizers | ✅ | SGD, Adam, AdamW |
-| Parallel execution | ✅ | Rayon for large tensors |
-| Broadcasting | ❌ | Coming soon |
-| Autograd | ❌ | Manual gradients only |
-| GPU support | ❌ | CPU only |
+| Element-wise + broadcast | ✅ | add/mul/etc + explicit *_broadcast + autograd broadcast |
+| Matrix ops | ✅ | matmul (incl. batched N-D), transpose, reshape |
+| Activations | ✅ | 13 functions (ReLU..softmax) |
+| Losses | ✅ | 5 (MSE, CE, etc) |
+| Optimizers | ✅ | SGD, Adam (Variable + low-level) |
+| Autograd | ✅ | Variable + full grad tracking |
+| Parallel | ✅ | Rayon + named _simd fns |
+| Views/slicing | ⚠️ | ZeroCopyView for FFI; no Tensor slicing yet |
+| GPU | ⚠️ | On `gpu-device-abstraction` branch |
 
 ## Next Steps
 
-- Read [PHASE5_COMPLETION.md](PHASE5_COMPLETION.md) for implementation details
-- Check [PERFORMANCE.md](PERFORMANCE.md) for benchmarking guide
-- See [RUSTTORCH_PLAN.md](RUSTTORCH_PLAN.md) for roadmap
+- Run `cargo test --workspace` and examples (mnist, gpt2 with --features datasets)
+- See [RUSTTORCH_TODO.md](RUSTTORCH_TODO.md) for open tasks
+- Check [PERFORMANCE.md](PERFORMANCE.md) for notes (some targets historical)
 
 ## Support
 

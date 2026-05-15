@@ -1,7 +1,7 @@
 //! RustTorch Core Library
 //!
-//! High-performance tensor operations and neural network primitives written in Rust.
-//! Designed to be a drop-in replacement for performance-critical PyTorch CPU operations.
+//! High-performance tensor, autograd, and neural network primitives with a PyTorch-like API.
+//! Standalone experimental implementation (CPU, 668+ tests, clippy-clean). Not a PyTorch drop-in backend.
 
 pub mod autograd;
 pub mod data;
@@ -19,7 +19,8 @@ pub mod ffi;
 pub use data::*;
 pub use error::{Result, TensorError};
 pub use ops::*;
-pub use tensor::{DType, Tensor, TensorView};
+pub use tensor::{DType, Tensor};
+pub use tensor::view::{TensorView as ZeroCopyView, TensorViewMut as ZeroCopyViewMut};
 
 #[cfg(test)]
 mod tests {

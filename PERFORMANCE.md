@@ -78,11 +78,11 @@ All benchmarks follow these principles:
 
 | Metric | Target | Status |
 |--------|--------|--------|
-| Element-wise ops vs PyTorch CPU | 1.2x - 2.0x faster | To be measured |
+| Element-wise ops vs PyTorch CPU | 1.2x - 2.0x faster | Aspirational (measure on workload; rayon + named _simd fns implemented) |
 | Memory safety overhead | 0% (compile-time) | ✅ Achieved |
-| Allocation efficiency | Minimize copies | 🔄 In progress |
-| Cache efficiency | Maximize locality | ✅ Contiguous layout |
-| Parallel scalability | Linear to 8 cores | 🔜 Planned |
+| Allocation efficiency | Minimize copies | ⚠️ BumpArena exists, not wired to hot paths |
+| Cache efficiency | Maximize locality | ✅ Contiguous |
+| Parallel scalability | Linear to cores | ✅ Rayon in elementwise/large ops |
 
 ### Operation-Specific Targets
 
@@ -177,8 +177,8 @@ Common hotspots to investigate:
 
 ### 1. SIMD Vectorization
 
-**Current Status**: Partial (ndarray provides some)
-**Target**: Manual SIMD for hot paths
+**Current Status**: Auto-vectorization via LLVM + rayon parallel in named *_simd fns (add_simd etc). std::simd explicit is unstable/future.
+**Target**: Manual SIMD for hot paths (when stable)
 
 ```rust
 // Example: Manual SIMD with std::simd (when stable)
@@ -235,45 +235,9 @@ pub fn add_parallel(a: &Tensor, b: &Tensor) -> Result<Tensor> {
 
 ### 3. Memory Pool Allocation
 
-**Current Status**: Not implemented
-**Target**: Reduce allocation overhead
+**Current Status**: AlignedBuffer + BumpArena implemented and unit-tested in `memory/` (not yet wired to hot ops; see RUSTTORCH_TODO.md Track D).
 
-```rust
-// Concept: Reusable tensor memory pool
-pub struct TensorPool {
-    small: Vec<Vec<f32>>,   // < 1KB
-    medium: Vec<Vec<f32>>,  // 1KB - 1MB
-    large: Vec<Vec<f32>>,   // > 1MB
-}
-
-impl TensorPool {
-    pub fn get(&mut self, size: usize) -> Vec<f32> {
-        // Return pre-allocated buffer or allocate new
-    }
-
-    pub fn return_buffer(&mut self, buffer: Vec<f32>) {
-        // Add buffer back to pool
-    }
-}
-```
-
-**Expected Speedup**: 5-10x for repeated small allocations
-
-### 4. In-Place Operations
-
-**Current Status**: Not implemented
-**Target**: Avoid unnecessary copies
-
-```rust
-// Current: Creates new tensor
-let result = add(&a, &b);
-
-// Future: Modify in-place
-let mut result = a.clone();
-result.add_(&b);  // In-place addition (save one allocation)
-```
-
-**Expected Speedup**: 1.5-2x for operation chains
+In-place ops and COW not present.
 
 ### 5. Cache-Friendly Layouts
 
@@ -308,7 +272,7 @@ for i in (0..n).step_by(BLOCK_SIZE) {
 | Element-wise op | 1x allocation | Output tensor |
 | Reduction | Minimal | Returns scalar |
 | Clone | 1x allocation | Full copy |
-| Slice view | 0 allocations | ❌ Not implemented |
+| Slice view | 0 allocations | ⚠️ ZeroCopyView for FFI only; no native Tensor views |
 
 ### Memory Optimization Priorities
 
@@ -328,12 +292,7 @@ for i in (0..n).step_by(BLOCK_SIZE) {
    - Savings: Memory and time for read-heavy workloads
 
 ### Memory Profiling Results
-
-To be measured:
-- [ ] Peak memory usage for common operations
-- [ ] Allocation count per operation
-- [ ] Cache hit rates
-- [ ] Memory bandwidth utilization
+BumpArena + tests provide allocation control; full profiling (massif/perf) not run in CI. See `cargo test` for arena invariants.
 
 ---
 
@@ -344,28 +303,26 @@ To be measured:
 **Impact**: High
 **Operations Affected**: All creating new tensors
 **Symptoms**: Allocation shows up in profiler
-**Mitigation**: Memory pooling (planned)
+**Mitigation**: BumpArena exists (unwired); custom allocator future
 
-### 2. No Broadcasting
+### 2. Limited Broadcasting
 
 **Impact**: Medium
-**Operations Affected**: Element-wise ops with different shapes
-**Symptoms**: Operations fail that work in PyTorch
-**Mitigation**: Implement broadcasting (Phase 4)
+**Operations Affected**: Core add/mul require exact match (use *_broadcast helpers or autograd broadcast_add)
+**Mitigation**: Explicit broadcast fns implemented; consider auto in future.
 
-### 3. No Views
+### 3. No Native Views
 
-**Impact**: High
-**Operations Affected**: Indexing, slicing, transpose
-**Symptoms**: Unnecessary copies
-**Mitigation**: Implement zero-copy views (Phase 4)
+**Impact**: High for some workloads
+**Operations Affected**: No Tensor slicing/index views (0-copy only for FFI via ZeroCopyView)
+**Mitigation**: Future work; current ops copy.
 
 ### 4. Scalar Loop Overhead
 
 **Impact**: Medium (for small tensors)
 **Operations Affected**: Element-wise operations
 **Symptoms**: Slower than expected for small inputs
-**Mitigation**: SIMD vectorization (in progress)
+**Mitigation**: Named _simd fns (rayon + auto-vec) implemented; explicit std::simd future
 
 ### 5. No GPU Support
 
@@ -378,25 +335,18 @@ To be measured:
 
 ## Future Optimizations
 
-### Short-term (Phase 3)
+### Implemented
+- Rayon parallel for large tensors, named _simd fns (auto-vec + par)
+- Memory: AlignedBuffer + BumpArena (tests only, not hot-wired)
+- Broadcasting (explicit *_broadcast + autograd broadcast_add)
+- Batched matmul (N-D, loop over batches)
 
-- [x] Comprehensive benchmarking suite
-- [ ] Criterion baseline comparisons
-- [ ] Profile hot paths with perf
-- [ ] Identify top 3 bottlenecks
-- [ ] Basic SIMD for element-wise ops
-
-### Medium-term (Phase 4)
-
-- [ ] Parallel processing with rayon (>10k elements)
-- [ ] Memory pooling for allocations
-- [ ] In-place operation variants
-- [ ] Zero-copy views and slicing
-- [ ] Broadcasting support
-
-### Long-term (Future)
-
-- [ ] GPU support (CUDA/ROCm/WebGPU)
+### Remaining (see RUSTTORCH_TODO.md)
+- Wire BumpArena to more ops
+- Native Tensor views/slicing
+- In-place variants
+- GPU (side branch)
+- CI, more py wrappers, property tests
 - [ ] Custom allocator integration
 - [ ] Advanced SIMD (AVX-512, NEON)
 - [ ] Distributed operations
@@ -406,15 +356,8 @@ To be measured:
 
 ## Benchmarking Results
 
-### To Be Completed
-
-Once RustTorch Python bindings are fully integrated:
-
-1. Run `python benchmarks/compare_pytorch.py`
-2. Collect results for all operation categories
-3. Create comparison tables
-4. Identify operations where RustTorch excels
-5. Identify areas needing optimization
+### Status
+Python comparison script exists (`benchmarks/compare_pytorch.py`) but requires built maturin bindings + PyTorch. No automated numbers checked in; run manually. Core Rust benches (criterion in rusttorch-core/benches) cover elementwise/reductions/activations.
 
 **Template for Results:**
 

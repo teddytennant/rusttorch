@@ -1,6 +1,6 @@
 # PyTorch Feature Port Tracker
 
-Running log of PyTorch 2.x features ported to rusttorch, skipped, or deferred. This is Track F in the repo plan (`.claude/plans/lucky-stargazing-spindle.md`) and gets updated whenever a PyTorch feature lands.
+Running log of PyTorch 2.x features ported to rusttorch, skipped, or deferred. Updated as features land (see RUSTTORCH_TODO.md Track F).
 
 ## Ported
 

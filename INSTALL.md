@@ -4,15 +4,9 @@ RustTorch is a PyTorch extension that provides high-performance Rust implementat
 
 ## Quick Start
 
-### Option 1: Install from PyPI (Recommended - Coming Soon)
+### Option 1: Install from Source (Current)
 
-```bash
-# Install PyTorch first (if not already installed)
-pip install torch
-
-# Install RustTorch extension
-pip install rusttorch
-```
+PyPI package not yet published. Build from source:
 
 ### Option 2: Install from Source
 
@@ -27,7 +21,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
 # 3. Clone the repository
-git clone https://github.com/yourusername/rusttorch.git
+git clone https://github.com/teddytennant/rusttorch.git
 cd rusttorch
 
 # 4. Install build dependencies
@@ -43,65 +37,22 @@ python -c "import torch; import rusttorch; print('PyTorch:', torch.__version__);
 
 ## Using RustTorch
 
-### Automatic Integration (Future Feature)
-
-In the future, RustTorch will automatically accelerate PyTorch operations when installed:
+Use explicitly (no torch monkey-patch):
 
 ```python
-import torch
+import rusttorch as rt
+from rusttorch import Variable, Linear, Adam, MSELoss
+import numpy as np
 
-# PyTorch operations may automatically use RustTorch backend
-x = torch.randn(1000, 1000)
-y = torch.randn(1000, 1000)
-result = torch.add(x, y)  # Accelerated by RustTorch if enabled
-```
+# Low-level
+x = rt.Tensor.zeros([32, 10])
+y = rt.add(x, rt.ones([32, 10]))
 
-### Explicit Usage (Current Method)
-
-Currently, use RustTorch operations explicitly:
-
-```python
-import torch
-import rusttorch
-
-# Create PyTorch tensors
-x_torch = torch.randn(1000, 1000)
-y_torch = torch.randn(1000, 1000)
-
-# Convert to RustTorch for acceleration
-x_rust = rusttorch.Tensor.from_numpy(x_torch.numpy())
-y_rust = rusttorch.Tensor.from_numpy(y_torch.numpy())
-
-# Use Rust-accelerated operations
-result = rusttorch.add(x_rust, y_rust)
-activated = rusttorch.relu(result)
-
-# Convert back to PyTorch when needed
-result_torch = torch.from_numpy(result.to_numpy())
-```
-
-### Direct RustTorch API
-
-You can also use RustTorch's API directly:
-
-```python
-import rusttorch
-
-# Create tensors
-x = rusttorch.Tensor.zeros([1000, 1000])
-y = rusttorch.Tensor.ones([1000, 1000])
-
-# Perform operations
-result = rusttorch.add(x, y)
-activated = rusttorch.relu(result)
-
-# Available operations:
-# - Element-wise: add, mul, sub, div (+ scalar variants)
-# - Reductions: sum, mean, max, min
-# - Activations: relu, sigmoid, tanh, gelu, softmax, etc.
-# - Matrix ops: matmul, transpose, reshape
-# - Loss functions: mse_loss, cross_entropy, etc.
-# - Optimizer updates: sgd_step, adam_step, etc.
+# Autograd training loop
+model = Linear(10, 2)
+opt = Adam([p for p in model.parameters()], lr=0.01)
+loss_fn = MSELoss()
+# v = Variable.from_numpy(...); out = model.forward(v); ...
 ```
 
 ## Performance Testing
@@ -170,12 +121,10 @@ This removes RustTorch but leaves PyTorch intact.
 
 ## Next Steps
 
-- Read [README.md](README.md) for feature overview
-- Check [PERFORMANCE.md](PERFORMANCE.md) for performance benchmarks
-- See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute
-- Review [RUSTTORCH_PLAN.md](RUSTTORCH_PLAN.md) for implementation details
+- `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`
+- Read [README.md](README.md) and [RUSTTORCH_TODO.md](RUSTTORCH_TODO.md)
 
 ## Support
 
-- **Issues**: https://github.com/yourusername/rusttorch/issues
-- **Documentation**: https://github.com/yourusername/rusttorch#readme
+- **Issues**: https://github.com/teddytennant/rusttorch/issues
+- **Documentation**: https://github.com/teddytennant/rusttorch#readme

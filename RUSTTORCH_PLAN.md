@@ -1,6 +1,8 @@
-# RustTorch Implementation Plan
+# RustTorch Implementation Plan (Historical)
 
-## Project Overview
+> **Note**: This is the original plan. The project has far exceeded it: full autograd, nn modules, GPT2, memory pools, broadcasting, batched matmul etc. are implemented. See README and RUSTTORCH_TODO.md for current state.
+
+## Project Overview (original)
 RustTorch is a project to rewrite performance-critical parts of PyTorch in Rust, leveraging Rust's memory safety, zero-cost abstractions, and superior performance for numerical computing tasks.
 
 ## Why Rust for PyTorch?
