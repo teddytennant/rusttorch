@@ -273,11 +273,6 @@ impl PartialEq for Tensor {
     }
 }
 
-/// A view into a tensor (non-owning)
-pub struct TensorView<'a> {
-    _phantom: std::marker::PhantomData<&'a Tensor>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

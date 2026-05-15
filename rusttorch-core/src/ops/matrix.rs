@@ -10,29 +10,17 @@ use ndarray::{Array, IxDyn};
 
 /// Matrix multiplication
 ///
-/// Performs matrix multiplication between two 2D tensors.
-/// For higher dimensional tensors, performs batched matrix multiplication.
+/// Performs matrix multiplication between two tensors.
+/// Supports 2D matmul and batched matmul for N-D (N>=3) where leading batch
+/// dimensions match exactly. Batch broadcasting is not supported (use explicit
+/// expand or separate calls).
 ///
 /// # Arguments
-/// * `a` - First tensor (must be at least 2D)
-/// * `b` - Second tensor (must be at least 2D)
+/// * `a` - First tensor (at least 2D, shape [..., M, K])
+/// * `b` - Second tensor (at least 2D, shape [..., K, N] with matching batch prefix)
 ///
 /// # Returns
-/// Result containing the matrix product or an error
-///
-/// # Panics
-/// Panics if the inner dimensions don't match (a.shape[-1] != b.shape[-2])
-///
-/// # Examples
-/// ```
-/// use rusttorch_core::{Tensor, DType};
-/// use rusttorch_core::ops::matrix::matmul;
-///
-/// let a = Tensor::ones(&[2, 3], DType::Float32);
-/// let b = Tensor::ones(&[3, 4], DType::Float32);
-/// let c = matmul(&a, &b).unwrap();
-/// assert_eq!(c.shape(), &[2, 4]);
-/// ```
+/// Result [..., M, N] or error on dim mismatch / unsupported batch shape
 pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     // Check that both tensors are at least 2D
     if a.ndim() < 2 || b.ndim() < 2 {
@@ -103,7 +91,6 @@ fn matmul_float32(
     let a_shape = a.shape();
     let b_shape = b.shape();
 
-    // For 2D x 2D, use ndarray's dot
     if a_shape.len() == 2 && b_shape.len() == 2 {
         let a_2d = a.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
         let b_2d = b.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
@@ -111,9 +98,47 @@ fn matmul_float32(
         return Ok(result.into_dyn());
     }
 
-    // For higher dimensions, we need batched matmul
-    // This is a simplified version - full batched matmul is more complex
-    Err("Batched matrix multiplication not yet implemented".to_string())
+    // Batched: require same ndim >=3 and exact match on leading batch dims
+    if a_shape.len() == b_shape.len() && a_shape.len() >= 3 {
+        let ndim = a_shape.len();
+        let prefix = &a_shape[..ndim - 2];
+        if prefix != &b_shape[..ndim - 2] {
+            return Err("Batched matmul requires identical leading batch dimensions".to_string());
+        }
+        let batch: usize = prefix.iter().product();
+        let m = a_shape[ndim - 2];
+        let k = a_shape[ndim - 1];
+        let n = b_shape[ndim - 1];
+
+        let a_flat = a.clone().into_shape((batch, m, k)).map_err(|e| e.to_string())?;
+        let b_flat = b.clone().into_shape((batch, k, n)).map_err(|e| e.to_string())?;
+
+        let mut out = Array::<f32, _>::zeros((batch, m, n));
+        for i in 0..batch {
+            let ai = a_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let bi = b_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let oi = ai.dot(&bi);
+            out.index_axis_mut(ndarray::Axis(0), i).assign(&oi);
+        }
+
+        // Reshape back to original batch prefix + [m, n]
+        let mut new_shape = prefix.to_vec();
+        new_shape.push(m);
+        new_shape.push(n);
+        return out.into_shape(new_shape).map_err(|e| e.to_string());
+    }
+
+    Err(format!(
+        "matmul for {}D @ {}D not supported (only 2D or N-D with matching batch prefix)",
+        a_shape.len(),
+        b_shape.len()
+    ))
 }
 
 fn matmul_float64(
@@ -130,7 +155,45 @@ fn matmul_float64(
         return Ok(result.into_dyn());
     }
 
-    Err("Batched matrix multiplication not yet implemented".to_string())
+    if a_shape.len() == b_shape.len() && a_shape.len() >= 3 {
+        let ndim = a_shape.len();
+        let prefix = &a_shape[..ndim - 2];
+        if prefix != &b_shape[..ndim - 2] {
+            return Err("Batched matmul requires identical leading batch dimensions".to_string());
+        }
+        let batch: usize = prefix.iter().product();
+        let m = a_shape[ndim - 2];
+        let k = a_shape[ndim - 1];
+        let n = b_shape[ndim - 1];
+
+        let a_flat = a.clone().into_shape((batch, m, k)).map_err(|e| e.to_string())?;
+        let b_flat = b.clone().into_shape((batch, k, n)).map_err(|e| e.to_string())?;
+
+        let mut out = Array::<f64, _>::zeros((batch, m, n));
+        for i in 0..batch {
+            let ai = a_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let bi = b_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let oi = ai.dot(&bi);
+            out.index_axis_mut(ndarray::Axis(0), i).assign(&oi);
+        }
+
+        let mut new_shape = prefix.to_vec();
+        new_shape.push(m);
+        new_shape.push(n);
+        return out.into_shape(new_shape).map_err(|e| e.to_string());
+    }
+
+    Err(format!(
+        "matmul for {}D @ {}D not supported",
+        a_shape.len(),
+        b_shape.len()
+    ))
 }
 
 fn matmul_int32(a: &Array<i32, IxDyn>, b: &Array<i32, IxDyn>) -> Result<Array<i32, IxDyn>, String> {
@@ -144,7 +207,45 @@ fn matmul_int32(a: &Array<i32, IxDyn>, b: &Array<i32, IxDyn>) -> Result<Array<i3
         return Ok(result.into_dyn());
     }
 
-    Err("Batched matrix multiplication not yet implemented".to_string())
+    if a_shape.len() == b_shape.len() && a_shape.len() >= 3 {
+        let ndim = a_shape.len();
+        let prefix = &a_shape[..ndim - 2];
+        if prefix != &b_shape[..ndim - 2] {
+            return Err("Batched matmul requires identical leading batch dimensions".to_string());
+        }
+        let batch: usize = prefix.iter().product();
+        let m = a_shape[ndim - 2];
+        let k = a_shape[ndim - 1];
+        let n = b_shape[ndim - 1];
+
+        let a_flat = a.clone().into_shape((batch, m, k)).map_err(|e| e.to_string())?;
+        let b_flat = b.clone().into_shape((batch, k, n)).map_err(|e| e.to_string())?;
+
+        let mut out = Array::<i32, _>::zeros((batch, m, n));
+        for i in 0..batch {
+            let ai = a_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let bi = b_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let oi = ai.dot(&bi);
+            out.index_axis_mut(ndarray::Axis(0), i).assign(&oi);
+        }
+
+        let mut new_shape = prefix.to_vec();
+        new_shape.push(m);
+        new_shape.push(n);
+        return out.into_shape(new_shape).map_err(|e| e.to_string());
+    }
+
+    Err(format!(
+        "matmul for {}D @ {}D not supported",
+        a_shape.len(),
+        b_shape.len()
+    ))
 }
 
 fn matmul_int64(a: &Array<i64, IxDyn>, b: &Array<i64, IxDyn>) -> Result<Array<i64, IxDyn>, String> {
@@ -158,7 +259,45 @@ fn matmul_int64(a: &Array<i64, IxDyn>, b: &Array<i64, IxDyn>) -> Result<Array<i6
         return Ok(result.into_dyn());
     }
 
-    Err("Batched matrix multiplication not yet implemented".to_string())
+    if a_shape.len() == b_shape.len() && a_shape.len() >= 3 {
+        let ndim = a_shape.len();
+        let prefix = &a_shape[..ndim - 2];
+        if prefix != &b_shape[..ndim - 2] {
+            return Err("Batched matmul requires identical leading batch dimensions".to_string());
+        }
+        let batch: usize = prefix.iter().product();
+        let m = a_shape[ndim - 2];
+        let k = a_shape[ndim - 1];
+        let n = b_shape[ndim - 1];
+
+        let a_flat = a.clone().into_shape((batch, m, k)).map_err(|e| e.to_string())?;
+        let b_flat = b.clone().into_shape((batch, k, n)).map_err(|e| e.to_string())?;
+
+        let mut out = Array::<i64, _>::zeros((batch, m, n));
+        for i in 0..batch {
+            let ai = a_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let bi = b_flat
+                .index_axis(ndarray::Axis(0), i)
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let oi = ai.dot(&bi);
+            out.index_axis_mut(ndarray::Axis(0), i).assign(&oi);
+        }
+
+        let mut new_shape = prefix.to_vec();
+        new_shape.push(m);
+        new_shape.push(n);
+        return out.into_shape(new_shape).map_err(|e| e.to_string());
+    }
+
+    Err(format!(
+        "matmul for {}D @ {}D not supported",
+        a_shape.len(),
+        b_shape.len()
+    ))
 }
 
 /// Transpose a tensor
@@ -385,5 +524,36 @@ mod tests {
         let result = matmul(&a_t, &b).unwrap();
 
         assert_eq!(result.shape(), &[2, 4]);
+    }
+
+    #[test]
+    fn test_matmul_batched_3d() {
+        // [2, 3, 4] @ [2, 4, 5] -> [2, 3, 5]
+        let a = Tensor::from_vec((0..24).map(|x| x as f32).collect(), &[2, 3, 4]);
+        let b = Tensor::from_vec((0..40).map(|x| x as f32).collect(), &[2, 4, 5]);
+        let c = matmul(&a, &b).unwrap();
+
+        assert_eq!(c.shape(), &[2, 3, 5]);
+        assert_eq!(c.numel(), 30);
+    }
+
+    #[test]
+    fn test_matmul_batched_4d() {
+        // [1, 2, 2, 2] @ [1, 2, 2, 3] -> [1, 2, 2, 3]
+        let a = Tensor::ones(&[1, 2, 2, 2], DType::Float32);
+        let b = Tensor::ones(&[1, 2, 2, 3], DType::Float32);
+        let c = matmul(&a, &b).unwrap();
+
+        assert_eq!(c.shape(), &[1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn test_matmul_batched_mismatched_batch() {
+        let a = Tensor::ones(&[2, 3, 4], DType::Float32);
+        let b = Tensor::ones(&[3, 4, 5], DType::Float32); // batch 3 != 2
+        let result = matmul(&a, &b);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("batch"));
     }
 }
